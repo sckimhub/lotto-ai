@@ -1,7 +1,45 @@
 import streamlit as st
 import requests
 import random
+import os
+import json
 from collections import Counter
+import streamlit.components.v1 as components
+import base64
+
+# ==========================================
+# [0] 설치형 앱 강제 적용 (마법의 꼼수)
+# ==========================================
+앱_설정_정보 = """
+{
+  "name": "인공지능 로또",
+  "short_name": "AI로또",
+  "theme_color": "#2980B9",
+  "background_color": "#ffffff",
+  "display": "standalone",
+  "start_url": "/",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/3063/3063822.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
+"""
+암호화된_정보 = base64.b64encode(앱_설정_정보.encode()).decode()
+
+components.html(f"""
+<script>
+    if (!window.parent.document.getElementById('pwa-manifest')) {{
+        const manifest = window.parent.document.createElement('link');
+        manifest.id = 'pwa-manifest';
+        manifest.rel = 'manifest';
+        manifest.href = 'data:application/manifest+json;base64,{암호화된_정보}';
+        window.parent.document.head.appendChild(manifest);
+    }}
+</script>
+""", width=0, height=0)
 
 # ==========================================
 # [1] 계산 규칙
@@ -48,7 +86,7 @@ class LotoAI:
         return False
 
 # ==========================================
-# [2] 정보 가져오기
+# [2] 정보 가져오기 (보너스 번호 추가)
 # ==========================================
 @st.cache_data
 def fetch_lotto_api(count):
@@ -68,7 +106,8 @@ def fetch_lotto_api(count):
         for item in display_list:
             epsd = item.get("ltEpsd")
             nums = [int(item.get(f"tm{i}WnNo")) for i in range(1, 7)]
-            history_info.append((epsd, nums))
+            bonus = int(item.get("bnusNo", 0)) # 보너스 번호 추가
+            history_info.append((epsd, nums, bonus))
         return full_data_flat, history_info
     except Exception as e:
         return None, str(e)
@@ -114,7 +153,7 @@ def generate_ai_games(full_data, weight_percent, options):
     return final_games
 
 # ==========================================
-# [3] 화면 구성
+# [3] 화면 구성 및 통계 로직
 # ==========================================
 st.set_page_config(page_title="인공지능 로또 분석기", page_icon="🎱")
 
@@ -125,6 +164,16 @@ html, body, [class*="css"] { font-family: "Malgun Gothic", sans-serif; }
 @media (max-width: 600px) {
     .block-container { padding-left: 0.5rem; padding-right: 0.5rem; }
 }
+.stat-box {
+    background-color: #f8f9fa;
+    border: 1px solid #ddd;
+    border-radius: 10px;
+    padding: 15px;
+    text-align: center;
+    margin-bottom: 10px;
+}
+.stat-number { font-size: 24px; font-weight: bold; color: #E74C3C; }
+.stat-title { font-size: 14px; color: #555; margin-top: 5px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -139,7 +188,6 @@ def get_ball_html(num):
 
 def draw_row(label_text, balls_list, is_header=False):
     balls_html = "".join([get_ball_html(n) for n in balls_list])
-    
     label_color = "#2980B9" if is_header else "#333"
     label_bg = "transparent" if is_header else "#f1f3f5"
     
@@ -154,11 +202,9 @@ def draw_row(label_text, balls_list, is_header=False):
 # --- 왼쪽 설정 메뉴 ---
 with st.sidebar:
     st.header("⚙️ 분석 설정")
-    
-    count_val = st.number_input("과거 분석 데이터(회)", min_value=5, max_value=100, value=10, step=1)
-    
+    count_val = st.number_input("과거 분석 정보(회)", min_value=5, max_value=100, value=10, step=1)
     st.write("흐름 가중치(%) - 높을수록 최근 번호 우선")
-    weight_val = st.number_input("가중치 입력", min_value=0, value=100, step=10, help="100%는 기본, 500% 이상은 강력 추천")
+    weight_val = st.number_input("가중치 입력", min_value=0, value=100, step=10)
     
     st.markdown("---")
     st.subheader("거르기 조건")
@@ -171,23 +217,23 @@ with st.sidebar:
 # --- 가운데 바탕 화면 ---
 st.title("인공지능 로또 분석기")
 
-# ★ 탭(Tab) 기능으로 홈 화면과 도움말 화면 분리
-tab_home, tab_help = st.tabs(["🎯 분석기 홈", "📖 도움말 (옵션 설명)"])
+tab_home, tab_stats, tab_help = st.tabs(["🎯 분석기 홈", "📊 이번 주 당첨 통계", "📖 설명서"])
 
 full_data, history_info = fetch_lotto_api(count_val)
 
 # ==========================================
-# 첫 번째 탭: 분석기 메인 화면
+# 첫 번째 탭: 분석기 화면
 # ==========================================
 with tab_home:
     if full_data:
-        # 1. 번호 뽑기 버튼
-        generate_btn = st.button("🚀 번호 뽑기 시작", type="primary", use_container_width=True)
+        # 다가올 목표 회차 계산 (가장 최근 회차 + 1)
+        target_epsd = history_info[0][0] + 1
+        
+        generate_btn = st.button(f"🚀 {target_epsd}회차 번호 뽑기 시작", type="primary", use_container_width=True)
         st.markdown("---")
 
-        # 2. 결과 나오는 곳
         if generate_btn:
-            st.markdown("### 🤖 새로 뽑힌 추천 번호")
+            st.markdown(f"### 🤖 새로 뽑힌 추천 번호 ({target_epsd}회차용)")
             options = {
                 'use_trend': use_trend, 'use_end_digit': use_end,
                 'use_dead_zone': use_dead, 'use_stats': use_stats,
@@ -197,40 +243,109 @@ with tab_home:
             with st.spinner(f"최근 기록과 {weight_val}% 가중치로 계산하고 있습니다..."):
                 games = generate_ai_games(full_data, weight_val, options)
                 
+                # ★ 서버 내부에 로그 파일로 저장 (jsonl 형식)
+                log_data = {"epsd": target_epsd, "games": games}
+                with open("lotto_history.jsonl", "a", encoding="utf-8") as f:
+                    f.write(json.dumps(log_data) + "\n")
+                
                 for i, game in enumerate(games):
                     draw_row(f"세트 {i+1}", game, is_header=False)
                 
-                st.success("완료되었습니다! 좋은 결과 있으시길 바랍니다! 🍀")
+                st.success(f"완료! 결과는 통계 탭에서 추적됩니다. 🍀")
             
             st.markdown("<br>", unsafe_allow_html=True)
 
-        # 3. 과거 당첨 내역
         with st.expander(f"📋 최근 {count_val}회 당첨 결과 확인하기", expanded=True):
-            for epsd, nums in reversed(history_info):
+            for epsd, nums, bonus in reversed(history_info):
                 draw_row(f"{epsd}회", nums, is_header=True)
-
     else:
         st.error("서버에서 정보를 가져오지 못했습니다.")
 
 # ==========================================
-# 두 번째 탭: 도움말 및 상세 설명
+# 두 번째 탭: 당첨 통계 화면 (실제 계산 로직 추가)
+# ==========================================
+with tab_stats:
+    if full_data:
+        # 가장 최근 추첨이 끝난 회차 정보
+        latest_epsd = history_info[0][0]
+        latest_nums = set(history_info[0][1])
+        latest_bonus = history_info[0][2]
+        
+        st.subheader(f"🏆 {latest_epsd}회차 AI 추천 당첨 성적")
+        st.write(f"사람들이 이전에 뽑아둔 번호 중, 이번 주({latest_epsd}회차)에 실제로 당첨된 기록을 추적합니다.")
+        
+        # 통계 계산용 변수
+        total_games = 0
+        prize_counts = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, "fail": 0}
+        missed_games = [] # 1, 2, 3등 당첨된 아까운 번호들 모음
+        
+        # 로그 파일 읽어서 비교하기
+        if os.path.exists("lotto_history.jsonl"):
+            with open("lotto_history.jsonl", "r", encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        data = json.loads(line)
+                        # 저장된 기록의 목표 회차가 이번에 추첨한 회차와 같다면 비교 시작
+                        if data.get("epsd") == latest_epsd:
+                            for game in data.get("games", []):
+                                total_games += 1
+                                match_count = len(set(game) & latest_nums)
+                                has_bonus = latest_bonus in game
+                                
+                                if match_count == 6: 
+                                    prize_counts[1] += 1
+                                    missed_games.append(("1등 당첨!!", game))
+                                elif match_count == 5 and has_bonus: 
+                                    prize_counts[2] += 1
+                                    missed_games.append(("2등 당첨!", game))
+                                elif match_count == 5: 
+                                    prize_counts[3] += 1
+                                    missed_games.append(("3등 당첨", game))
+                                elif match_count == 4: prize_counts[4] += 1
+                                elif match_count == 3: prize_counts[5] += 1
+                                else: prize_counts["fail"] += 1
+                    except Exception:
+                        pass
+        
+        if total_games == 0:
+            st.info(f"아직 서버에 보관된 {latest_epsd}회차 생성 기록이 없거나, 초기화되었습니다.")
+        else:
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.markdown(f'<div class="stat-box"><div class="stat-number">{total_games:,}</div><div class="stat-title">총 생성된 게임</div></div>', unsafe_allow_html=True)
+            with col2:
+                st.markdown(f'<div class="stat-box"><div class="stat-number" style="color:#2980B9;">{prize_counts[1]:,}</div><div class="stat-title">1등 당첨</div></div>', unsafe_allow_html=True)
+            with col3:
+                st.markdown(f'<div class="stat-box"><div class="stat-number" style="color:#27AE60;">{prize_counts[3]:,}</div><div class="stat-title">3등 당첨</div></div>', unsafe_allow_html=True)
+                
+            col4, col5, col6 = st.columns(3)
+            with col4:
+                st.markdown(f'<div class="stat-box"><div class="stat-number" style="color:#8E44AD;">{prize_counts[2]:,}</div><div class="stat-title">2등 당첨</div></div>', unsafe_allow_html=True)
+            with col5:
+                st.markdown(f'<div class="stat-box"><div class="stat-number" style="color:#F39C12;">{prize_counts[4]:,}</div><div class="stat-title">4등 당첨</div></div>', unsafe_allow_html=True)
+            with col6:
+                st.markdown(f'<div class="stat-box"><div class="stat-number" style="color:#7F8C8D;">{prize_counts[5]:,}</div><div class="stat-title">5등 당첨</div></div>', unsafe_allow_html=True)
+
+            if missed_games:
+                st.markdown("---")
+                st.markdown("#### ✨ 아깝게 상위권에 당첨된 기록들")
+                for label, game in missed_games:
+                    draw_row(label, game, is_header=False)
+
+# ==========================================
+# 세 번째 탭: 설명서
 # ==========================================
 with tab_help:
     st.subheader("💡 인공지능 분석 원리")
     st.write("이 프로그램은 단순한 무작위 뽑기가 아닙니다. 역대 당첨 번호의 통계적 사실을 바탕으로 당첨 확률이 극히 희박한 조합을 걸러내어, 가장 가능성 높은 번호만을 추천합니다.")
     st.markdown("---")
-
-    st.markdown("#### 🔥 흐름 가중치 (Trend Weight)")
-    st.info("**왜 필요한가요?**\n\n로또 기계도 물리적인 장치이므로 미세한 편향이나 흐름이 존재할 수 있습니다. 최근 15주 동안 자주 나온 번호('Hot Number')가 당분간 계속 나오는 경향성을 반영하여, 해당 번호가 뽑힐 확률을 인위적으로 높입니다. 가중치(%)를 올릴수록 최근에 자주 나온 번호 위주로 뽑히게 됩니다.")
-
-    st.markdown("#### ⚡ 끝자리 일치 (End Digit Sync)")
-    st.success("**통계적 팩트**\n\n로또 번호 6개가 모두 다른 끝수(예: 1, 12, 23, 34, 45...)를 가질 확률은 매우 낮습니다. 역대 당첨 번호의 약 **85% 이상**은 '12, 42' 처럼 끝자리가 같은 숫자가 최소 1쌍 이상 포함되어 있습니다. 이 옵션은 그 85%의 확률에 베팅하여 번호를 맞춥니다.")
-
-    st.markdown("#### ☠️ 제외 구간 (Dead Zone)")
-    st.error("**분산의 법칙**\n\n번호가 1번대부터 40번대까지 골고루 한 개씩 예쁘게 나오는 경우는 매우 드뭅니다. 보통 특정 번호대(예: 20번대)가 통째로 전멸하여 한 개도 나오지 않는 현상이 자주 발생합니다. 이 조건은 억지로 모든 구간을 채우지 않고, 자연스러운 '전멸 구간'을 인위적으로 만듭니다.")
-
-    st.markdown("#### 📊 통계 정밀 거르기 (Statistical Filter)")
-    st.warning("**가장 강력한 수학적 접근**\n\n6개 번호의 합이 100 미만이거나 175를 초과하는 경우는 전체의 10% 미만입니다. 또한 홀수나 짝수만 6개가 몰려서 나오는 경우도 2% 미만입니다. 이 필터는 나올 확률이 극히 희박한 '불량 조합'을 원천적으로 차단하여 돈 낭비를 막아줍니다.")
-
-    st.markdown("#### 🔗 이어지는 번호 (Consecutive Rule)")
-    st.info("**심리적 허점 공략**\n\n사람들은 '14, 15가 같이 나오겠어?'라고 생각해서 마킹을 피하지만, 실제로는 50% 이상의 회차에서 연속 번호가 등장합니다. 남들이 피해서 1등 당첨금이 쏠리는 이 패턴을 일부러 포함시켜 당첨 효율을 극대화합니다.")
+    st.markdown("#### 🔥 흐름 가중치")
+    st.info("**왜 필요한가요?**\n\n로또 기계도 물리적인 장치이므로 미세한 편향이나 흐름이 존재할 수 있습니다. 최근 자주 나온 번호가 당분간 계속 나오는 현상을 반영하여, 해당 번호가 뽑힐 확률을 높입니다.")
+    st.markdown("#### ⚡ 끝자리 일치")
+    st.success("**통계적 사실**\n\n역대 당첨 번호의 약 **85% 이상**은 '12, 42' 처럼 끝자리가 같은 숫자가 최소 1쌍 이상 포함되어 있습니다. 이 조건은 그 85%의 확률에 베팅합니다.")
+    st.markdown("#### ☠️ 제외 구간")
+    st.error("**분산의 법칙**\n\n특정 번호대(예: 20번대)가 통째로 전멸하여 한 개도 나오지 않는 현상이 자주 발생합니다. 이 조건은 억지로 모든 구간을 채우지 않고, 자연스러운 '전멸 구간'을 인위적으로 만듭니다.")
+    st.markdown("#### 📊 통계 정밀 거르기")
+    st.warning("**가장 강력한 수학적 접근**\n\n6개 번호의 합이 100 미만이거나 175를 초과하는 경우는 극히 드뭅니다. 나올 확률이 희박한 '불량 조합'을 차단하여 돈 낭비를 막아줍니다.")
+    st.markdown("#### 🔗 이어지는 번호")
+    st.info("**심리적 약점 공략**\n\n사람들은 연속된 번호 마킹을 피하지만, 실제로는 50% 이상의 회차에서 연속 번호가 등장합니다. 남들이 피해서 1등 당첨금이 쏠리는 무늬를 포함시킵니다.")
