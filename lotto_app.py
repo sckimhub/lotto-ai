@@ -86,9 +86,9 @@ class LotoAI:
         return False
 
 # ==========================================
-# [2] 정보 가져오기 (보너스 번호 + 당첨금 확인)
+# [2] 정보 가져오기 (매시간 갱신 적용)
 # ==========================================
-@st.cache_data
+@st.cache_data(ttl=3600)  # 1시간마다 새로운 정보 확인
 def fetch_lotto_api(count):
     url = "https://www.dhlottery.co.kr/lt645/selectPstLt645Info.do?srchLtEpsd=all"
     try:
@@ -112,10 +112,9 @@ def fetch_lotto_api(count):
     except Exception as e:
         return None, str(e)
 
-@st.cache_data
+@st.cache_data(ttl=3600)  # 1시간마다 새로운 정보 확인
 def fetch_prize_info(epsd):
-    """특정 회차의 1등 실제 당첨금을 동행복권에서 가져옵니다."""
-    prizes = {1: 2000000000, 2: 50000000, 3: 1500000, 4: 50000, 5: 5000} # 기본 예상 금액
+    prizes = {1: 2000000000, 2: 50000000, 3: 1500000, 4: 50000, 5: 5000}
     try:
         url = f"https://www.dhlottery.co.kr/common.do?method=getLottoNumber&drwNo={epsd}"
         res = requests.get(url, timeout=3).json()
@@ -228,7 +227,6 @@ with st.sidebar:
     use_stats = st.checkbox("📊 통계 정밀 거르기", value=True)
     use_consec = st.checkbox("🔗 이어지는 번호", value=True)
     
-    # 관리자 전용 숨겨진 로그 확인 메뉴
     st.markdown("---")
     with st.expander("🛠️ 관리자 전용: 전체 기록 열람"):
         if os.path.exists("lotto_history.jsonl"):
@@ -267,7 +265,6 @@ with tab_home:
             with st.spinner(f"최근 기록과 {weight_val}% 가중치로 계산하고 있습니다..."):
                 games = generate_ai_games(full_data, weight_val, options)
                 
-                # 로그 저장 (jsonl)
                 log_data = {"epsd": target_epsd, "games": games}
                 with open("lotto_history.jsonl", "a", encoding="utf-8") as f:
                     f.write(json.dumps(log_data) + "\n")
@@ -296,12 +293,10 @@ with tab_stats:
         
         st.subheader(f"📈 {latest_epsd}회차 투자 대비 수익률 (ROI)")
         
-        # 1. 계산 변수 세팅
         total_games = 0
         prize_counts = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, "fail": 0}
-        winning_games = [] # 상위권 당첨 기록용
+        winning_games = [] 
         
-        # 2. 파일에서 생성 기록 읽어오기
         if os.path.exists("lotto_history.jsonl"):
             with open("lotto_history.jsonl", "r", encoding="utf-8") as f:
                 for line in f:
@@ -331,9 +326,8 @@ with tab_stats:
         if total_games == 0:
             st.info(f"아직 서버에 보관된 {latest_epsd}회차 생성 기록이 없거나, 서버가 잠들면서 기록이 초기화되었습니다.")
         else:
-            # 3. 당첨금액 세팅 및 계산
             prizes = fetch_prize_info(latest_epsd)
-            total_spent = total_games * 1000 # 1게임당 1,000원
+            total_spent = total_games * 1000
             total_won = (
                 (prize_counts[1] * prizes[1]) +
                 (prize_counts[2] * prizes[2]) +
@@ -343,7 +337,6 @@ with tab_stats:
             )
             roi = (total_won / total_spent * 100) if total_spent > 0 else 0
             
-            # 4. 수익률 대시보드 출력
             st.markdown(f"""
             <div style="display:flex; flex-direction:row; justify-content:space-around; background-color:#f1f3f5; padding:20px; border-radius:10px; margin-bottom:20px;">
                 <div style="text-align:center;">
@@ -361,7 +354,6 @@ with tab_stats:
             </div>
             """, unsafe_allow_html=True)
             
-            # 5. 세부 당첨 횟수 출력
             st.markdown(f"**총 {total_games:,}게임 중 당첨 내역**")
             c1, c2, c3 = st.columns(3)
             with c1: st.markdown(f'<div class="stat-box"><div class="stat-number" style="color:#C0392B;">{prize_counts[1]:,} 회</div><div class="stat-title">1등 (약 {prizes[1]//100000000}억)</div></div>', unsafe_allow_html=True)
@@ -373,22 +365,41 @@ with tab_stats:
             with c5: st.markdown(f'<div class="stat-box"><div class="stat-number" style="color:#27AE60;">{prize_counts[5]:,} 회</div><div class="stat-title">5등 (5천 원)</div></div>', unsafe_allow_html=True)
             with c6: st.markdown(f'<div class="stat-box"><div class="stat-number" style="color:#7F8C8D;">{prize_counts["fail"]:,} 회</div><div class="stat-title">낙첨</div></div>', unsafe_allow_html=True)
 
-            # 6. 상위권(1~3등) 달성 내역 보여주기
             if winning_games:
                 st.markdown("---")
                 st.markdown("#### ✨ 축하합니다! 상위권 당첨 번호")
-                for label, game in winning_games:  # ← 지난번에 에러가 났던 반복문 완벽 수정!
+                for label, game in winning_games:
                     draw_row(label, game, is_header=False)
 
 # ==========================================
-# 탭 3: 설명서
+# 탭 3: 설명서 및 주의사항
 # ==========================================
 with tab_help:
     st.subheader("💡 인공지능 분석 원리")
-    st.write("단순 무작위 픽이 아닙니다. 역대 당첨 번호의 통계적 사실을 바탕으로 당첨 확률이 극히 희박한 조합을 걸러냅니다.")
+    st.write("이 프로그램은 단순한 무작위 픽이 아닙니다. 역대 당첨 번호의 통계적 사실을 바탕으로 당첨 확률이 극히 희박한 조합을 걸러내어, 효율적인 번호를 추천합니다.")
     st.markdown("---")
-    st.info("**🔥 흐름 가중치**\n로또 기계의 미세한 편향을 고려해 최근에 자주 나온 번호가 뽑힐 확률을 높입니다.")
-    st.success("**⚡ 끝자리 일치**\n역대 당첨 번호의 약 85% 이상은 끝자리가 같은 숫자가 최소 1쌍 존재합니다. 이 확률에 베팅합니다.")
-    st.error("**☠️ 제외 구간**\n특정 번호대(예: 20번대)가 통째로 전멸하는 자연스러운 패턴을 억지로 훼손하지 않습니다.")
-    st.warning("**📊 통계 정밀 거르기**\n6개 번호의 합이 100 미만, 175 초과 등 확률이 희박한 '불량 조합'을 차단해 투자금을 아낍니다.")
-    st.info("**🔗 이어지는 번호**\n실제로는 50% 이상의 회차에서 연속 번호가 등장합니다. 사람들이 기피하는 이 무늬를 일부러 포함합니다.")
+    
+    st.markdown("#### 🔥 흐름 가중치 (Trend Weight)")
+    st.info("**왜 필요한가요?**\n로또 기계도 물리적인 장치이므로 미세한 편향이나 흐름이 존재할 수 있습니다. 최근 15주 동안 자주 나온 번호('Hot Number')가 당분간 계속 나오는 경향성을 반영하여, 해당 번호가 뽑힐 확률을 인위적으로 높입니다.")
+
+    st.markdown("#### ⚡ 끝자리 일치 (End Digit Sync)")
+    st.success("**통계적 팩트**\n로또 번호 6개가 모두 다른 끝수(예: 1, 12, 23, 34, 45...)를 가질 확률은 매우 낮습니다. 역대 당첨 번호의 약 **85% 이상**은 '12, 42' 처럼 끝자리가 같은 숫자가 최소 1쌍 이상 포함되어 있습니다. 이 옵션은 그 85%의 확률에 베팅하여 번호를 맞춥니다.")
+
+    st.markdown("#### ☠️ 제외 구간 (Dead Zone)")
+    st.error("**분산의 법칙**\n번호가 1번대부터 40번대까지 골고루 한 개씩 예쁘게 나오는 경우는 매우 드뭅니다. 보통 특정 번호대(예: 20번대)가 통째로 전멸하여 한 개도 나오지 않는 현상이 자주 발생합니다. 이 조건은 억지로 모든 구간을 채우지 않고, 자연스러운 '전멸 구간'을 인위적으로 만듭니다.")
+
+    st.markdown("#### 📊 통계 정밀 거르기 (Statistical Filter)")
+    st.warning("**가장 강력한 수학적 접근**\n6개 번호의 합이 100 미만이거나 175를 초과하는 경우는 전체의 10% 미만입니다. 또한 홀수나 짝수만 6개가 몰려서 나오는 경우도 2% 미만입니다. 이 필터는 나올 확률이 극히 희박한 '불량 조합'을 원천적으로 차단하여 헛돈 쓰는 것을 막아줍니다.")
+
+    st.markdown("#### 🔗 이어지는 번호 (Consecutive Rule)")
+    st.info("**심리적 허점 공략**\n사람들은 '14, 15가 같이 나오겠어?'라고 생각해서 마킹을 피하지만, 실제로는 50% 이상의 회차에서 연속 번호가 등장합니다. 남들이 피해서 1등 당첨금이 쏠리는 이 패턴을 일부러 포함시켜 당첨 효율을 극대화합니다.")
+
+    st.markdown("---")
+    
+    # 면책 조항 (사용자 요청 반영)
+    st.error("""
+    ### ⚠️ 꼭 읽어주세요 (면책 조항)
+    이 프로그램은 불필요한 조합을 제외하고 수학적 확률을 높이기 위해 설계되었지만, **로또 번호 추첨은 독립 시행이며 궁극적으로 '운(Luck)'에 의해 결정됩니다.**
+    
+    아무리 뛰어난 인공지능이나 통계 기법을 사용하더라도 100% 당첨을 보장하는 방법은 이 세상에 존재하지 않습니다. 본 프로그램을 통해 생성된 번호로 발생한 결과에 대한 책임은 전적으로 사용자 본인에게 있습니다. **로또는 반드시 부담 없는 소액으로, 건전하고 즐거운 마음으로만 즐겨 주시기 바랍니다.**
+    """)
