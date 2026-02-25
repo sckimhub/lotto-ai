@@ -232,7 +232,7 @@ def generate_ai_games(full_data, weight_percent, options):
 # ==========================================
 st.set_page_config(page_title="인공지능 로또 분석기", page_icon="🎱")
 
-# 깃허브 아이콘 등 상단 메뉴 숨기기 CSS 적용
+# 👇👇 여기서부터 복사해서 기존 style 부분을 덮어쓰세요 👇👇
 st.markdown("""
 <style>
 html, body, [class*="css"] { font-family: "Malgun Gothic", sans-serif; }
@@ -252,12 +252,22 @@ html, body, [class*="css"] { font-family: "Malgun Gothic", sans-serif; }
 .stat-number { font-size: 22px; font-weight: bold; }
 .stat-title { font-size: 13px; color: #666; margin-top: 5px; }
 
-/* 우측 상단 깃허브 아이콘 및 Share 메뉴 완벽 숨기기 */
-.stApp > header {
-    visibility: hidden;
+/* 🚀 우측 상단 툴바(Share, GitHub 등) 강제 삭제 */
+[data-testid="stToolbar"] {
+    visibility: hidden !important;
+    display: none !important;
+}
+/* 🚀 기본 헤더 여백 숨기기 */
+header {
+    visibility: hidden !important;
+}
+/* 🚀 하단 Streamlit 워터마크 숨기기 (보너스) */
+footer {
+    visibility: hidden !important;
 }
 </style>
 """, unsafe_allow_html=True)
+# 👆👆 여기까지 👆👆
 
 # ---------------------------------------------------------
 # 세션 상태 초기화 (버튼 연속 클릭 방지 및 화면 유지용)
