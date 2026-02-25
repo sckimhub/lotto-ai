@@ -7,6 +7,10 @@ from collections import Counter
 import streamlit.components.v1 as components
 import base64
 
+# [추가됨] 구글 시트 연동을 위한 라이브러리
+import gspread
+from google.oauth2.service_account import Credentials
+
 # ==========================================
 # [0] 설치형 앱 강제 적용 (PWA)
 # ==========================================
@@ -42,7 +46,75 @@ components.html(f"""
 """, width=0, height=0)
 
 # ==========================================
-# [1] 계산 규칙
+# [1] 구글 스프레드시트 데이터베이스 함수 (새로 추가됨)
+# ==========================================
+def get_gsheet_client():
+    """구글 시트 인증 클라이언트를 반환합니다."""
+    if "gcp_service_account" not in st.secrets or "sheet" not in st.secrets:
+        return None
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"], scopes=scopes
+    )
+    return gspread.authorize(creds)
+
+def load_history():
+    """구글 시트에서 전체 기록을 가져옵니다. (실패시 로컬 jsonl 시도)"""
+    records = []
+    try:
+        gc = get_gsheet_client()
+        if gc:
+            sheet_url = st.secrets["sheet"]["url"]
+            doc = gc.open_by_url(sheet_url)
+            worksheet = doc.sheet1
+            data = worksheet.get_all_values()
+            
+            # 구글 시트는 1열: 회차(epsd), 2열: 번호(games_json) 형태로 저장됩니다.
+            for row in data:
+                if len(row) >= 2:
+                    try:
+                        epsd = int(row[0])
+                        games = json.loads(row[1])
+                        records.append({"epsd": epsd, "games": games})
+                    except: pass
+            return records
+    except Exception as e:
+        # 인증 오류 등 발생 시 무시하고 넘어감 (개발 모드일때만 경고창)
+        pass
+        
+    # 구글 시트 연결 실패 시 임시방편으로 로컬 파일 읽기 시도
+    if os.path.exists("lotto_history.jsonl"):
+        with open("lotto_history.jsonl", "r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    records.append(json.loads(line))
+                except: pass
+    return records
+
+def save_history(epsd, games):
+    """새로운 분석 결과를 구글 시트에 한 줄(Row) 추가합니다."""
+    try:
+        gc = get_gsheet_client()
+        if gc:
+            sheet_url = st.secrets["sheet"]["url"]
+            doc = gc.open_by_url(sheet_url)
+            worksheet = doc.sheet1
+            # 1열에 회차, 2열에 번호 리스트를 텍스트로 저장
+            worksheet.append_row([epsd, json.dumps(games)])
+            return
+    except Exception as e:
+        st.warning("구글 시트에 연결되지 않아 임시 파일에 저장됩니다. (Secrets 설정을 확인해주세요!)")
+    
+    # 구글 시트 연결 실패 시 임시 파일에 저장 (초기화 위험 있음)
+    log_data = {"epsd": epsd, "games": games}
+    with open("lotto_history.jsonl", "a", encoding="utf-8") as f:
+        f.write(json.dumps(log_data) + "\n")
+
+# ==========================================
+# [2] 계산 규칙
 # ==========================================
 class LotoAI:
     def __init__(self):
@@ -86,9 +158,9 @@ class LotoAI:
         return False
 
 # ==========================================
-# [2] 정보 가져오기 (매시간 갱신 적용)
+# [3] 정보 가져오기 (매시간 갱신 적용)
 # ==========================================
-@st.cache_data(ttl=3600)  # 1시간마다 새로운 정보 확인
+@st.cache_data(ttl=3600)  
 def fetch_lotto_api(count):
     url = "https://www.dhlottery.co.kr/lt645/selectPstLt645Info.do?srchLtEpsd=all"
     try:
@@ -112,7 +184,7 @@ def fetch_lotto_api(count):
     except Exception as e:
         return None, str(e)
 
-@st.cache_data(ttl=3600)  # 1시간마다 새로운 정보 확인
+@st.cache_data(ttl=3600)  
 def fetch_prize_info(epsd):
     prizes = {1: 2000000000, 2: 50000000, 3: 1500000, 4: 50000, 5: 5000}
     try:
@@ -120,8 +192,7 @@ def fetch_prize_info(epsd):
         res = requests.get(url, timeout=3).json()
         if res.get("returnValue") == "success":
             prizes[1] = res.get("firstWinamnt", 2000000000)
-    except:
-        pass
+    except: pass
     return prizes
 
 def generate_ai_games(full_data, weight_percent, options):
@@ -165,7 +236,7 @@ def generate_ai_games(full_data, weight_percent, options):
     return final_games
 
 # ==========================================
-# [3] 화면 구성 및 통계 계산 로직
+# [4] 화면 구성 및 통계 계산 로직
 # ==========================================
 st.set_page_config(page_title="인공지능 로또 분석기", page_icon="🎱")
 
@@ -231,25 +302,22 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # [추가된 기능] 파트너가 추가한 보너스: 최근 많이 나온 번호 TOP 5
     st.subheader("🔥 최근 핫넘버 TOP 5")
     st.caption(f"(최근 {count_val}회 기준)")
-    top_numbers_placeholder = st.empty() # 아래에서 데이터 로드 후 채워넣음
+    top_numbers_placeholder = st.empty()
 
     st.markdown("---")
     with st.expander("🛠️ 관리자 전용: 전체 기록 열람"):
-        if os.path.exists("lotto_history.jsonl"):
-            with open("lotto_history.jsonl", "r", encoding="utf-8") as f:
-                logs = f.read()
-            st.text_area("저장된 데이터베이스", logs, height=200)
-            st.download_button("📥 로그 파일 다운로드", data=logs, file_name="lotto_history.jsonl", mime="text/plain", use_container_width=True)
+        # DB(구글시트)에서 데이터를 불러와서 보여줍니다.
+        db_records = load_history()
+        if db_records:
+            st.write(f"총 {len(db_records)}개의 기록이 보관되어 있습니다.")
+            st.json(db_records)
         else:
             st.info("기록된 데이터가 없습니다.")
 
-# 데이터 불러오기
 full_data, history_info = fetch_lotto_api(count_val)
 
-# 사이드바 핫넘버 업데이트 (데이터가 있을 때만)
 if full_data and history_info:
     recent_nums_only = []
     for epsd, nums, bonus in history_info:
@@ -269,9 +337,12 @@ st.title("인공지능 로또 분석기")
 tab_home, tab_stats, tab_help = st.tabs(["🎯 분석기 홈", "📊 이번 주 수익률/통계", "📖 설명서"])
 
 if full_data:
-    latest_epsd = history_info[0][0]     # 가장 최근 추첨된 회차
-    target_epsd = latest_epsd + 1        # 분석 중인 '이번 주' 목표 회차
+    latest_epsd = history_info[0][0]     
+    target_epsd = latest_epsd + 1        
     
+    # DB 데이터를 미리 한 번만 불러옵니다.
+    history_records = load_history()
+
     # ==========================================
     # 탭 1: 분석기 메인 화면
     # ==========================================
@@ -290,15 +361,13 @@ if full_data:
             with st.spinner(f"최근 기록과 {weight_val}% 가중치로 계산하고 있습니다..."):
                 games = generate_ai_games(full_data, weight_val, options)
                 
-                # 기록 저장 (이번 주 회차인 target_epsd로 저장)
-                log_data = {"epsd": target_epsd, "games": games}
-                with open("lotto_history.jsonl", "a", encoding="utf-8") as f:
-                    f.write(json.dumps(log_data) + "\n")
+                # [수정됨] 새롭게 구글 시트에 데이터 저장 요청
+                save_history(target_epsd, games)
                 
                 for i, game in enumerate(games):
                     draw_row(f"세트 {i+1}", game, is_header=False)
                 
-                st.success(f"생성 완료! 결과는 추첨 이후 '통계 탭'에서 확인하세요. 🍀")
+                st.success(f"생성 및 DB 저장 완료! 결과는 추첨 이후 '통계 탭'에서 확인하세요. 🍀")
             
             st.markdown("<br>", unsafe_allow_html=True)
 
@@ -313,47 +382,35 @@ if full_data:
         latest_nums = set(history_info[0][1])
         latest_bonus = history_info[0][2]
         
-        # 데이터 집계 변수
         total_games_last_week = 0 
-        this_week_usage_count = 0  # [요청하신 기능] 이번 주 사용량 카운트 변수
+        this_week_usage_count = 0  
         prize_counts = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, "fail": 0}
         winning_games = [] 
         
-        if os.path.exists("lotto_history.jsonl"):
-            with open("lotto_history.jsonl", "r", encoding="utf-8") as f:
-                for line in f:
-                    try:
-                        data = json.loads(line)
-                        
-                        # 1. 이번 주(다음 회차) 분석기 사용량 합산
-                        if data.get("epsd") == target_epsd:
-                            # 1회 생성(버튼 클릭 1번) 당 5게임이므로, 
-                            # 세트 수(게임 수)를 모두 더해줍니다.
-                            this_week_usage_count += len(data.get("games", []))
-                        
-                        # 2. 지난 회차(가장 최근 추첨) 당첨 통계 합산
-                        if data.get("epsd") == latest_epsd:
-                            for game in data.get("games", []):
-                                total_games_last_week += 1
-                                match_count = len(set(game) & latest_nums)
-                                has_bonus = latest_bonus in game
-                                
-                                if match_count == 6: 
-                                    prize_counts[1] += 1
-                                    winning_games.append(("🎉 1등 당첨!", game))
-                                elif match_count == 5 and has_bonus: 
-                                    prize_counts[2] += 1
-                                    winning_games.append(("✨ 2등 당첨!", game))
-                                elif match_count == 5: 
-                                    prize_counts[3] += 1
-                                    winning_games.append(("👍 3등 당첨", game))
-                                elif match_count == 4: prize_counts[4] += 1
-                                elif match_count == 3: prize_counts[5] += 1
-                                else: prize_counts["fail"] += 1
-                    except Exception:
-                        pass
+        # [수정됨] 파일 대신 DB(구글시트)에서 불러온 기록으로 통계 계산
+        for data in history_records:
+            if data.get("epsd") == target_epsd:
+                this_week_usage_count += len(data.get("games", []))
+            
+            if data.get("epsd") == latest_epsd:
+                for game in data.get("games", []):
+                    total_games_last_week += 1
+                    match_count = len(set(game) & latest_nums)
+                    has_bonus = latest_bonus in game
+                    
+                    if match_count == 6: 
+                        prize_counts[1] += 1
+                        winning_games.append(("🎉 1등 당첨!", game))
+                    elif match_count == 5 and has_bonus: 
+                        prize_counts[2] += 1
+                        winning_games.append(("✨ 2등 당첨!", game))
+                    elif match_count == 5: 
+                        prize_counts[3] += 1
+                        winning_games.append(("👍 3등 당첨", game))
+                    elif match_count == 4: prize_counts[4] += 1
+                    elif match_count == 3: prize_counts[5] += 1
+                    else: prize_counts["fail"] += 1
         
-        # --- [요청하신 기능 추가] 이번 주 누적 분석 횟수 UI ---
         st.markdown(f"""
             <div style="background: linear-gradient(135deg, #2c3e50 0%, #3498db 100%); padding: 20px; border-radius: 10px; text-align: center; color: white; margin-bottom: 20px;">
                 <div style="font-size: 15px; opacity: 0.9; margin-bottom: 5px;">현재 준비 중인 {target_epsd}회차 대비</div>
@@ -365,7 +422,7 @@ if full_data:
         st.subheader(f"📈 {latest_epsd}회차 투자 대비 수익률 (ROI)")
         
         if total_games_last_week == 0:
-            st.info(f"아직 서버에 보관된 {latest_epsd}회차 생성 기록이 없습니다.")
+            st.info(f"아직 데이터베이스에 {latest_epsd}회차 생성 기록이 없습니다.")
         else:
             prizes = fetch_prize_info(latest_epsd)
             total_spent = total_games_last_week * 1000
@@ -421,27 +478,25 @@ if full_data:
         st.markdown("---")
         
         st.markdown("#### 🔥 흐름 가중치 (Trend Weight)")
-        st.info("**왜 필요한가요?**\n로또 기계도 물리적인 장치이므로 미세한 편향이나 흐름이 존재할 수 있습니다. 최근 15주 동안 자주 나온 번호('Hot Number')가 당분간 계속 나오는 경향성을 반영하여, 해당 번호가 뽑힐 확률을 인위적으로 높입니다.")
+        st.info("**왜 필요한가요?**\n최근 15주 동안 자주 나온 번호('Hot Number')가 당분간 계속 나오는 경향성을 반영하여, 해당 번호가 뽑힐 확률을 높입니다.")
 
         st.markdown("#### ⚡ 끝자리 일치 (End Digit Sync)")
-        st.success("**통계적 팩트**\n로또 번호 6개가 모두 다른 끝수(예: 1, 12, 23, 34, 45...)를 가질 확률은 매우 낮습니다. 역대 당첨 번호의 약 **85% 이상**은 '12, 42' 처럼 끝자리가 같은 숫자가 최소 1쌍 이상 포함되어 있습니다. 이 옵션은 그 85%의 확률에 베팅하여 번호를 맞춥니다.")
+        st.success("**통계적 팩트**\n역대 당첨 번호의 약 **85% 이상**은 '12, 42' 처럼 끝자리가 같은 숫자가 최소 1쌍 이상 포함되어 있습니다. 이 옵션은 그 85%의 확률에 베팅합니다.")
 
         st.markdown("#### ☠️ 제외 구간 (Dead Zone)")
-        st.error("**분산의 법칙**\n번호가 1번대부터 40번대까지 골고루 한 개씩 예쁘게 나오는 경우는 매우 드뭅니다. 보통 특정 번호대(예: 20번대)가 통째로 전멸하여 한 개도 나오지 않는 현상이 자주 발생합니다. 이 조건은 억지로 모든 구간을 채우지 않고, 자연스러운 '전멸 구간'을 인위적으로 만듭니다.")
+        st.error("**분산의 법칙**\n특정 번호대(예: 20번대)가 전멸하여 한 개도 나오지 않는 현상이 자주 발생합니다. 자연스러운 '전멸 구간'을 인위적으로 만듭니다.")
 
         st.markdown("#### 📊 통계 정밀 거르기 (Statistical Filter)")
-        st.warning("**가장 강력한 수학적 접근**\n6개 번호의 합이 100 미만이거나 175를 초과하는 경우는 전체의 10% 미만입니다. 또한 홀수나 짝수만 6개가 몰려서 나오는 경우도 2% 미만입니다. 이 필터는 나올 확률이 극히 희박한 '불량 조합'을 원천적으로 차단하여 헛돈 쓰는 것을 막아줍니다.")
+        st.warning("**가장 강력한 수학적 접근**\n6개 번호의 합, 홀짝 비율 등 나올 확률이 극히 희박한 '불량 조합'을 차단하여 헛돈 쓰는 것을 막아줍니다.")
 
         st.markdown("#### 🔗 이어지는 번호 (Consecutive Rule)")
-        st.info("**심리적 허점 공략**\n사람들은 '14, 15가 같이 나오겠어?'라고 생각해서 마킹을 피하지만, 실제로는 50% 이상의 회차에서 연속 번호가 등장합니다. 남들이 피해서 1등 당첨금이 쏠리는 이 패턴을 일부러 포함시켜 당첨 효율을 극대화합니다.")
+        st.info("**심리적 허점 공략**\n50% 이상의 회차에서 연속 번호가 등장합니다. 남들이 피해서 당첨금이 쏠리는 이 패턴을 일부러 포함시킵니다.")
 
         st.markdown("---")
-        
         st.error("""
         ### ⚠️ 꼭 읽어주세요 (면책 조항)
-        이 프로그램은 불필요한 조합을 제외하고 수학적 확률을 높이기 위해 설계되었지만, **로또 번호 추첨은 독립 시행이며 궁극적으로 '운(Luck)'에 의해 결정됩니다.**
-        
-        아무리 뛰어난 인공지능이나 통계 기법을 사용하더라도 100% 당첨을 보장하는 방법은 이 세상에 존재하지 않습니다. 본 프로그램을 통해 생성된 번호로 발생한 결과에 대한 책임은 전적으로 사용자 본인에게 있습니다. **로또는 반드시 부담 없는 소액으로, 건전하고 즐거운 마음으로만 즐겨 주시기 바랍니다.**
+        이 프로그램은 수학적 확률을 높이기 위해 설계되었지만, **로또 번호 추첨은 독립 시행이며 궁극적으로 '운(Luck)'에 의해 결정됩니다.**
+        100% 당첨을 보장하는 방법은 존재하지 않습니다. 결과에 대한 책임은 본인에게 있으며, 반드시 건전한 소액으로 즐겨 주시기 바랍니다.
         """)
 
 else:
