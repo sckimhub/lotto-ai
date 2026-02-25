@@ -3,11 +3,11 @@ import requests
 import random
 import os
 import json
+import time # [추가됨] 구글 API 과부하 방지용 딜레이를 위한 라이브러리
 from collections import Counter
 import streamlit.components.v1 as components
 import base64
 
-# [추가됨] 구글 시트 연동을 위한 라이브러리
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -46,10 +46,9 @@ components.html(f"""
 """, width=0, height=0)
 
 # ==========================================
-# [1] 구글 스프레드시트 데이터베이스 함수 (새로 추가됨)
+# [1] 구글 스프레드시트 데이터베이스 함수
 # ==========================================
 def get_gsheet_client():
-    """구글 시트 인증 클라이언트를 반환합니다."""
     if "gcp_service_account" not in st.secrets or "sheet" not in st.secrets:
         return None
     scopes = [
@@ -62,7 +61,6 @@ def get_gsheet_client():
     return gspread.authorize(creds)
 
 def load_history():
-    """구글 시트에서 전체 기록을 가져옵니다. (실패시 로컬 jsonl 시도)"""
     records = []
     try:
         gc = get_gsheet_client()
@@ -72,7 +70,6 @@ def load_history():
             worksheet = doc.sheet1
             data = worksheet.get_all_values()
             
-            # 구글 시트는 1열: 회차(epsd), 2열: 번호(games_json) 형태로 저장됩니다.
             for row in data:
                 if len(row) >= 2:
                     try:
@@ -81,11 +78,8 @@ def load_history():
                         records.append({"epsd": epsd, "games": games})
                     except: pass
             return records
-    except Exception as e:
-        # 인증 오류 등 발생 시 무시하고 넘어감 (개발 모드일때만 경고창)
-        pass
+    except: pass
         
-    # 구글 시트 연결 실패 시 임시방편으로 로컬 파일 읽기 시도
     if os.path.exists("lotto_history.jsonl"):
         with open("lotto_history.jsonl", "r", encoding="utf-8") as f:
             for line in f:
@@ -95,23 +89,21 @@ def load_history():
     return records
 
 def save_history(epsd, games):
-    """새로운 분석 결과를 구글 시트에 한 줄(Row) 추가합니다."""
     try:
         gc = get_gsheet_client()
         if gc:
             sheet_url = st.secrets["sheet"]["url"]
             doc = gc.open_by_url(sheet_url)
             worksheet = doc.sheet1
-            # 1열에 회차, 2열에 번호 리스트를 텍스트로 저장
             worksheet.append_row([epsd, json.dumps(games)])
-            return
+            return True
     except Exception as e:
-        st.warning("구글 시트에 연결되지 않아 임시 파일에 저장됩니다. (Secrets 설정을 확인해주세요!)")
+        pass
     
-    # 구글 시트 연결 실패 시 임시 파일에 저장 (초기화 위험 있음)
     log_data = {"epsd": epsd, "games": games}
     with open("lotto_history.jsonl", "a", encoding="utf-8") as f:
         f.write(json.dumps(log_data) + "\n")
+    return False
 
 # ==========================================
 # [2] 계산 규칙
@@ -261,6 +253,17 @@ html, body, [class*="css"] { font-family: "Malgun Gothic", sans-serif; }
 </style>
 """, unsafe_allow_html=True)
 
+# ---------------------------------------------------------
+# 세션 상태 초기화 (버튼 연속 클릭 방지 및 화면 유지용)
+# ---------------------------------------------------------
+if 'is_generating' not in st.session_state:
+    st.session_state.is_generating = False
+if 'recent_generated_games' not in st.session_state:
+    st.session_state.recent_generated_games = []
+
+def start_generation():
+    st.session_state.is_generating = True
+
 def get_ball_html(num):
     color = "#27AE60" 
     if num <= 10: color = "#F39C12" 
@@ -283,9 +286,6 @@ def draw_row(label_text, balls_list, is_header=False):
 """
     st.markdown(html_code, unsafe_allow_html=True)
 
-# ---------------------------------------------------------
-# 사이드바 및 데이터 로드
-# ---------------------------------------------------------
 with st.sidebar:
     st.header("⚙️ 분석 설정")
     count_val = st.number_input("과거 분석 정보(회)", min_value=5, max_value=100, value=10, step=1)
@@ -301,20 +301,9 @@ with st.sidebar:
     use_consec = st.checkbox("🔗 이어지는 번호", value=True)
     
     st.markdown("---")
-    
     st.subheader("🔥 최근 핫넘버 TOP 5")
     st.caption(f"(최근 {count_val}회 기준)")
     top_numbers_placeholder = st.empty()
-
-    st.markdown("---")
-    with st.expander("🛠️ 관리자 전용: 전체 기록 열람"):
-        # DB(구글시트)에서 데이터를 불러와서 보여줍니다.
-        db_records = load_history()
-        if db_records:
-            st.write(f"총 {len(db_records)}개의 기록이 보관되어 있습니다.")
-            st.json(db_records)
-        else:
-            st.info("기록된 데이터가 없습니다.")
 
 full_data, history_info = fetch_lotto_api(count_val)
 
@@ -329,9 +318,6 @@ if full_data and history_info:
         top_html += f"<div style='margin-bottom:5px;'>{get_ball_html(num)} <span style='font-size:14px; font-weight:bold; color:#555;'>({freq}회 출현)</span></div>"
     top_numbers_placeholder.markdown(top_html, unsafe_allow_html=True)
 
-# ---------------------------------------------------------
-# 가운데 바탕 화면 
-# ---------------------------------------------------------
 st.title("인공지능 로또 분석기")
 
 tab_home, tab_stats, tab_help = st.tabs(["🎯 분석기 홈", "📊 이번 주 수익률/통계", "📖 설명서"])
@@ -340,35 +326,52 @@ if full_data:
     latest_epsd = history_info[0][0]     
     target_epsd = latest_epsd + 1        
     
-    # DB 데이터를 미리 한 번만 불러옵니다.
+    # DB 데이터를 미리 한 번만 불러옵니다. 이 데이터가 최신 통계의 기준이 됩니다.
     history_records = load_history()
 
     # ==========================================
     # 탭 1: 분석기 메인 화면
     # ==========================================
     with tab_home:
-        generate_btn = st.button(f"🚀 {target_epsd}회차 번호 뽑기 시작", type="primary", use_container_width=True)
+        # on_click 이벤트로 버튼을 누르자마자 즉시 잠급니다.
+        generate_btn = st.button(
+            f"🚀 {target_epsd}회차 번호 뽑기 시작", 
+            type="primary", 
+            use_container_width=True,
+            disabled=st.session_state.is_generating,
+            on_click=start_generation
+        )
         st.markdown("---")
 
-        if generate_btn:
-            st.markdown(f"### 🤖 새로 뽑힌 추천 번호 ({target_epsd}회차용)")
+        if st.session_state.is_generating:
             options = {
                 'use_trend': use_trend, 'use_end_digit': use_end,
                 'use_dead_zone': use_dead, 'use_stats': use_stats,
                 'use_consecutive': use_consec
             }
             
-            with st.spinner(f"최근 기록과 {weight_val}% 가중치로 계산하고 있습니다..."):
+            with st.spinner("번호 분석 및 구글 시트에 안전하게 저장 중입니다... (연속 클릭 방지 중)"):
                 games = generate_ai_games(full_data, weight_val, options)
                 
-                # [수정됨] 새롭게 구글 시트에 데이터 저장 요청
+                # 구글 시트에 저장
                 save_history(target_epsd, games)
                 
-                for i, game in enumerate(games):
-                    draw_row(f"세트 {i+1}", game, is_header=False)
+                # 구글 API 과부하 방지를 위해 1.5초 강제 대기
+                time.sleep(1.5)
                 
-                st.success(f"생성 및 DB 저장 완료! 결과는 추첨 이후 '통계 탭'에서 확인하세요. 🍀")
-            
+                # 새로고침 후에도 화면에 띄우기 위해 세션에 저장
+                st.session_state.recent_generated_games = games
+                st.session_state.is_generating = False
+                
+                # 핵심: 데이터를 새로 읽어오기 위해 스크립트를 재실행(새로고침)합니다.
+                st.rerun()
+
+        # 새로고침이 된 후, 방금 뽑은 번호가 있다면 보여줍니다.
+        if st.session_state.recent_generated_games and not st.session_state.is_generating:
+            st.markdown(f"### 🤖 새로 뽑힌 추천 번호 ({target_epsd}회차용)")
+            for i, game in enumerate(st.session_state.recent_generated_games):
+                draw_row(f"세트 {i+1}", game, is_header=False)
+            st.success(f"생성 및 DB 저장 완료! 최신 데이터가 '통계 탭'에 반영되었습니다. 🍀")
             st.markdown("<br>", unsafe_allow_html=True)
 
         with st.expander(f"📋 최근 {count_val}회 당첨 결과 확인하기", expanded=True):
@@ -387,7 +390,6 @@ if full_data:
         prize_counts = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, "fail": 0}
         winning_games = [] 
         
-        # [수정됨] 파일 대신 DB(구글시트)에서 불러온 기록으로 통계 계산
         for data in history_records:
             if data.get("epsd") == target_epsd:
                 this_week_usage_count += len(data.get("games", []))
