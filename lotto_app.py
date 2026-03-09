@@ -4,6 +4,7 @@ import random
 import os
 import json
 import time
+import pandas as pd
 from collections import Counter
 import streamlit.components.v1 as components
 import base64
@@ -64,8 +65,6 @@ def get_gsheet_client():
 
 def load_history():
     records = []
-
-    # 구글 시트 우선 시도
     try:
         gc = get_gsheet_client()
         if gc:
@@ -84,7 +83,6 @@ def load_history():
     except Exception as e:
         st.warning(f"구글 시트 불러오기 실패, 로컬 파일로 대체합니다. ({e})")
 
-    # 폴백: 로컬 파일
     if os.path.exists("lotto_history.jsonl"):
         with open("lotto_history.jsonl", "r", encoding="utf-8") as f:
             for line in f:
@@ -96,11 +94,6 @@ def load_history():
 
 
 def save_history(epsd: int, games: list, retries: int = 3, retry_delay: float = 1.5) -> bool:
-    """
-    구글 시트에 저장 시도 (최대 retries 회 재시도).
-    저장 후 실제로 데이터가 들어갔는지 검증까지 수행.
-    모두 실패 시 로컬 파일로 폴백. 성공 시 True 반환.
-    """
     gc = get_gsheet_client()
     if gc:
         sheet_url = st.secrets["sheet"]["url"]
@@ -110,34 +103,27 @@ def save_history(epsd: int, games: list, retries: int = 3, retry_delay: float = 
             try:
                 worksheet = gc.open_by_url(sheet_url).sheet1
                 worksheet.append_row(row_data)
-
-                # 저장 검증: 마지막 행이 실제로 기록됐는지 확인
                 last_row = worksheet.get_all_values()[-1]
                 if len(last_row) >= 2 and str(last_row[0]) == str(epsd):
-                    return True  # 저장 + 검증 성공
-
-                # 데이터는 들어갔으나 검증 불일치 → 재시도
+                    return True  
                 raise ValueError(f"검증 실패: 저장된 회차({last_row[0]}) ≠ 요청 회차({epsd})")
-
             except Exception as e:
                 if attempt < retries:
                     time.sleep(retry_delay)
                 else:
-                    st.warning(f"구글 시트 저장 {retries}회 모두 실패, 로컬 파일에 저장합니다. (마지막 오류: {e})")
+                    st.warning(f"구글 시트 저장 {retries}회 모두 실패, 로컬 파일에 저장합니다. ({e})")
 
-    # 폴백: 로컬 파일 (구글 시트 연결 없거나 모두 실패한 경우에만)
     with open("lotto_history.jsonl", "a", encoding="utf-8") as f:
         f.write(json.dumps({"epsd": epsd, "games": games}) + "\n")
     return False
 
 
 # ==========================================
-# [2] AI 분석 엔진
+# [2] AI 분석 엔진 (소수 필터 추가)
 # ==========================================
 class LottoAI:
 
     def analyze_recent_trend(self, data: list, scope: int = 15) -> dict:
-        """최근 scope 회차 번호의 출현 빈도를 가중치로 반환."""
         recent = data[:scope * 6]
         counts = Counter(recent)
         weights = {i: 1.0 for i in range(1, 46)}
@@ -146,73 +132,74 @@ class LottoAI:
         return weights
 
     def has_end_digit_pair(self, numbers: list) -> bool:
-        """끝자리가 같은 번호가 1쌍 이상 존재하는지 확인."""
         end_digits = [n % 10 for n in numbers]
         return any(c >= 2 for c in Counter(end_digits).values())
 
     def has_dead_zone(self, numbers: list) -> bool:
-        """5구간 중 2개 이상이 비어있는지 확인 (분산 패턴)."""
         zones = [0] * 9
         for n in numbers:
             zones[(n - 1) // 5] = 1
         return zones.count(0) >= 2
 
     def passes_stat_filter(self, numbers: list) -> bool:
-        """합계·홀짝·고저 분포가 통계 기준을 통과하는지 확인."""
         total = sum(numbers)
         if not (100 <= total <= 175):
             return False
         odd_count = sum(1 for n in numbers if n % 2 != 0)
         if odd_count in (0, 6):
             return False
-        low_count = sum(1 for n in numbers if n <= 22)
-        if low_count in (0, 6):
+        low_count = sum(1 for n in numbers if n <= 22):
             return False
         return True
 
     def has_consecutive(self, numbers: list) -> bool:
-        """연속 번호가 1쌍 이상 존재하는지 확인."""
         sorted_nums = sorted(numbers)
-        return any(
-            sorted_nums[i + 1] == sorted_nums[i] + 1
-            for i in range(len(sorted_nums) - 1)
-        )
+        return any(sorted_nums[i + 1] == sorted_nums[i] + 1 for i in range(len(sorted_nums) - 1))
+
+    # [신규 추가] 소수 필터 로직
+    def has_valid_primes(self, numbers: list) -> bool:
+        """6개 번호 중 소수(1과 자기 자신으로만 나누어지는 수)가 1~3개 포함되었는지 확인."""
+        primes = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43}
+        prime_count = sum(1 for n in numbers if n in primes)
+        return 1 <= prime_count <= 3
 
 
 def generate_ai_games(full_data: list, weight_percent: int, options: dict) -> list:
     ai = LottoAI()
 
-    # 가중치 계산
     if options["use_trend"]:
         trend_weights = ai.analyze_recent_trend(full_data, scope=15)
         extra = weight_percent / 100.0
         final_weights = [
-            trend_weights.get(i, 1.0) + extra if trend_weights.get(i, 1.0) > 1.0
-            else 1.0
+            trend_weights.get(i, 1.0) + extra if trend_weights.get(i, 1.0) > 1.0 else 1.0
             for i in range(1, 46)
         ]
     else:
         final_weights = [1.0] * 45
 
     final_games = []
-    relaxed_any = False  # 조건 완화 여부 추적
+    relaxed_any = False  
 
     while len(final_games) < 5:
-        # 게임 하나를 뽑을 때마다 옵션을 원본에서 복사 → 각 게임 독립적으로 심사
+        # [문서화] 매 세트를 생성할 때마다 active_options를 원본 옵션으로 초기화합니다.
+        # 이렇게 해야 이전 세트에서 조건이 완화되었더라도, 새 세트를 뽑을 때는 다시 엄격한 기준으로 시작합니다.
         active_options = options.copy()
         attempts = 0
 
         while True:
             attempts += 1
 
-            # 단계별 조건 완화 (덜 중요한 순서대로 해제)
+            # [문서화] 조건 단계별 완화 로직
+            # 뽑은 번호가 까다로운 조건들을 모두 통과하지 못하고 수천 번 반복(무한 루프)되는 것을 막기 위해,
+            # 특정 시도 횟수를 넘기면 가장 덜 중요한 필터부터 하나씩 임시로 끕니다(False).
             if attempts == 2_000: active_options["use_dead_zone"]   = False; relaxed_any = True
             if attempts == 4_000: active_options["use_consecutive"] = False; relaxed_any = True
-            if attempts == 6_000: active_options["use_stats"]       = False; relaxed_any = True
-            if attempts == 8_000: active_options["use_end_digit"]   = False; relaxed_any = True
+            if attempts == 6_000: active_options["use_prime"]       = False; relaxed_any = True # 신규 소수 필터 완화
+            if attempts == 8_000: active_options["use_stats"]       = False; relaxed_any = True
+            if attempts == 10_000: active_options["use_end_digit"]  = False; relaxed_any = True
 
-            # 최후의 보루: 모든 필터 해제 후에도 실패하면 무작위 추가
-            if attempts > 10_000:
+            # 최후의 보루: 모든 필터 해제 후에도 실패하면 완전 무작위 생성 후 종료
+            if attempts > 12_000:
                 final_games.append(sorted(random.sample(range(1, 46), 6)))
                 relaxed_any = True
                 break
@@ -221,15 +208,18 @@ def generate_ai_games(full_data: list, weight_percent: int, options: dict) -> li
             if len(set(candidate)) < 6:
                 continue
 
+            # 선택된 필터들을 모두 통과하는지 검사
             if active_options["use_end_digit"] and not ai.has_end_digit_pair(candidate): continue
-            if active_options["use_dead_zone"] and not ai.has_dead_zone(candidate):       continue
+            if active_options["use_dead_zone"] and not ai.has_dead_zone(candidate):      continue
             if active_options["use_stats"]     and not ai.passes_stat_filter(candidate):  continue
+            if active_options["use_prime"]     and not ai.has_valid_primes(candidate):    continue # 신규 추가
             if active_options["use_consecutive"]:
                 if len(final_games) < 3 and not ai.has_consecutive(candidate):
                     if random.random() < 0.7: continue
 
+            # 모든 조건을 무사히 통과했다면 게임 추가 후 내부 루프 탈출
             final_games.append(candidate)
-            break  # 이 게임 통과 → 다음 게임으로
+            break  
 
     if relaxed_any:
         st.info("💡 일부 필터 조합이 까다로워 AI가 조건을 단계적으로 완화하여 번호를 생성했습니다.")
@@ -242,7 +232,6 @@ def generate_ai_games(full_data: list, weight_percent: int, options: dict) -> li
 # ==========================================
 @st.cache_data(ttl=3600)
 def fetch_lotto_data(count: int):
-    """동행복권 API에서 당첨 번호를 가져옵니다."""
     url = "https://www.dhlottery.co.kr/lt645/selectPstLt645Info.do?srchLtEpsd=all"
     try:
         response = requests.get(url, timeout=5)
@@ -251,7 +240,6 @@ def fetch_lotto_data(count: int):
     except Exception as e:
         return None, str(e)
 
-    # ltEpsd 기준 내림차순 정렬 (최신 회차 우선)
     all_list = sorted(all_list, key=lambda x: int(x.get("ltEpsd", 0)), reverse=True)
 
     full_data_flat = []
@@ -271,7 +259,6 @@ def fetch_lotto_data(count: int):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _fetch_prize_cached(epsd: int) -> dict:
-    """당첨금이 정상 등록된 경우에만 캐시. 미등록 시 예외 발생."""
     url = f"https://www.dhlottery.co.kr/common.do?method=getLottoNumber&drwNo={epsd}"
     res = requests.get(url, timeout=5)
     res.raise_for_status()
@@ -282,13 +269,12 @@ def _fetch_prize_cached(epsd: int) -> dict:
 
 
 def fetch_prize_info(epsd: int) -> dict:
-    """특정 회차의 등수별 당첨 금액을 반환합니다. 데이터 미비 시 기본값 반환."""
     default_prizes = {1: None, 2: 50_000_000, 3: 1_500_000, 4: 50_000, 5: 5_000}
     try:
         data = _fetch_prize_cached(epsd)
         default_prizes[1] = data.get("firstWinamnt")
     except Exception:
-        pass  # 아직 업데이트 안 된 경우 조용히 기본값 반환 (캐시 안 됨)
+        pass  
     return default_prizes
 
 
@@ -366,7 +352,6 @@ html, body, [class*="css"] { font-family: "Malgun Gothic", sans-serif; }
 [data-testid="stToolbar"] { visibility: hidden !important; display: none !important; }
 header  { visibility: hidden !important; }
 footer  { visibility: hidden !important; }
-/* PC에서 모바일 전용 설정 패널 숨기기 */
 .mobile-only-settings { display: none; }
 @media (max-width: 768px) {
     .mobile-only-settings { display: block; }
@@ -387,7 +372,7 @@ if "last_save_to_sheet" not in st.session_state:
 
 
 # ==========================================
-# [7] 사이드바 (PC) — 데스크탑에서는 사이드바에 표시
+# [7] 사이드바 (PC)
 # ==========================================
 with st.sidebar:
     st.header("⚙️ 분석 설정")
@@ -402,6 +387,7 @@ with st.sidebar:
     sb_use_dead   = st.checkbox("☠️ 제외 구간",        value=True, key="sb_dead")
     sb_use_stats  = st.checkbox("📊 통계 정밀 거르기", value=True, key="sb_stats")
     sb_use_consec = st.checkbox("🔗 이어지는 번호",    value=True, key="sb_consec")
+    sb_use_prime  = st.checkbox("🔢 소수 필터 (1~3개)", value=True, key="sb_prime") # 신규 추가
 
     st.markdown("---")
     st.subheader("🔥 최근 핫넘버 TOP 5")
@@ -414,7 +400,6 @@ with st.sidebar:
 full_data, history_info = fetch_lotto_data(sb_count_val)
 
 if full_data and history_info:
-    # 사이드바 핫넘버 표시
     recent_nums = [n for _, nums, _ in history_info for n in nums]
     top5 = Counter(recent_nums).most_common(5)
     hot_html = "".join(
@@ -432,7 +417,7 @@ if full_data and history_info:
     tab_home, tab_stats, tab_help = st.tabs(["🎯 분석기 홈", "📊 이번 주 수익률/통계", "📖 설명서"])
 
     # ==========================================
-    # 모바일용 설정 패널 (탭 내부 상단에 expander로 표시)
+    # 탭 1: 모바일 설정 패널 및 분석 실행
     # ==========================================
     with tab_home:
         st.markdown('<div class="mobile-only-settings">', unsafe_allow_html=True)
@@ -449,8 +434,8 @@ if full_data and history_info:
                 mb_use_dead   = st.checkbox("☠️ 제외 구간",        value=sb_use_dead,   key="mb_dead")
                 mb_use_stats  = st.checkbox("📊 통계 거르기",      value=sb_use_stats,  key="mb_stats")
                 mb_use_consec = st.checkbox("🔗 이어지는 번호",    value=sb_use_consec, key="mb_consec")
+                mb_use_prime  = st.checkbox("🔢 소수 필터",        value=sb_use_prime,  key="mb_prime") # 신규 추가
 
-            # 모바일 핫넘버
             st.markdown(f"**🔥 최근 핫넘버 TOP 5** (최근 {mb_count_val}회 기준)")
             mb_recent = fetch_lotto_data(mb_count_val)
             if mb_recent[1]:
@@ -464,7 +449,8 @@ if full_data and history_info:
                 st.markdown(mb_hot_html, unsafe_allow_html=True)
 
         st.markdown('</div>', unsafe_allow_html=True)
-        # 실제 사용할 값: 모바일 expander 값 우선
+        
+        # 실제 적용 옵션 매핑
         count_val  = mb_count_val
         weight_val = mb_weight_val
         use_trend  = mb_use_trend
@@ -472,6 +458,7 @@ if full_data and history_info:
         use_dead   = mb_use_dead
         use_stats  = mb_use_stats
         use_consec = mb_use_consec
+        use_prime  = mb_use_prime
 
         st.button(
             f"🚀 {target_epsd}회차 번호 뽑기 시작",
@@ -489,6 +476,7 @@ if full_data and history_info:
                 "use_dead_zone":   use_dead,
                 "use_stats":       use_stats,
                 "use_consecutive": use_consec,
+                "use_prime":       use_prime, # 신규 추가
             }
             with st.spinner("번호 분석 중..."):
                 games = generate_ai_games(full_data, weight_val, options)
@@ -516,7 +504,7 @@ if full_data and history_info:
                 draw_row(f"{epsd}회", nums, is_header=True)
 
     # ==========================================
-    # 탭 2: 수익률/통계
+    # 탭 2: 수익률/통계 (차트 추가됨)
     # ==========================================
     with tab_stats:
         latest_nums  = set(history_info[0][1])
@@ -612,8 +600,22 @@ if full_data and history_info:
                 for label, game in winning_games:
                     draw_row(label, game)
 
+        # [신규 추가] 번호별 출현 빈도 차트
+        st.markdown("---")
+        st.subheader(f"📊 최근 {count_val}회 번호별 출현 빈도 차트")
+        recent_all_nums = [n for _, nums, _ in history_info for n in nums]
+        freq_dict = Counter(recent_all_nums)
+        
+        chart_data = {"번호": [], "출현 횟수": []}
+        for i in range(1, 46):
+            chart_data["번호"].append(f"{i}번")
+            chart_data["출현 횟수"].append(freq_dict.get(i, 0))
+            
+        df_chart = pd.DataFrame(chart_data).set_index("번호")
+        st.bar_chart(df_chart, color="#2980B9")
+
     # ==========================================
-    # 탭 3: 설명서
+    # 탭 3: 설명서 (소수 필터 내용 추가)
     # ==========================================
     with tab_help:
         st.subheader("💡 인공지능 분석 원리")
@@ -625,44 +627,22 @@ if full_data and history_info:
         st.markdown("---")
 
         st.markdown("#### 🔥 흐름 가중치 (Trend Weight)")
-        st.info(
-            "**왜 필요한가요?**\n"
-            "로또 기계도 물리적인 장치이므로 미세한 편향이나 흐름이 존재할 수 있습니다. "
-            "최근 15주 동안 자주 나온 번호('Hot Number')가 당분간 계속 나오는 경향성을 반영하여 "
-            "해당 번호가 뽑힐 확률을 인위적으로 높입니다."
-        )
+        st.info("최근 15주 동안 자주 나온 번호('Hot Number')가 당분간 계속 나오는 경향성을 반영하여 해당 번호가 뽑힐 확률을 높입니다.")
 
         st.markdown("#### ⚡ 끝자리 일치 (End Digit Sync)")
-        st.success(
-            "**통계적 팩트**\n"
-            "로또 번호 6개가 모두 다른 끝수를 가질 확률은 매우 낮습니다. "
-            "역대 당첨 번호의 약 **85% 이상**은 끝자리가 같은 숫자가 최소 1쌍 이상 포함되어 있습니다. "
-            "이 옵션은 그 85%의 확률에 베팅합니다."
-        )
+        st.success("역대 당첨 번호의 약 85% 이상은 끝자리가 같은 숫자가 최소 1쌍 이상 포함되어 있습니다. 이 옵션은 그 확률에 베팅합니다.")
 
         st.markdown("#### ☠️ 제외 구간 (Dead Zone)")
-        st.error(
-            "**분산의 법칙**\n"
-            "번호가 1번대부터 40번대까지 골고루 나오는 경우는 매우 드뭅니다. "
-            "특정 번호대가 통째로 전멸하는 현상이 자주 발생합니다. "
-            "이 조건은 자연스러운 '전멸 구간'을 인위적으로 만듭니다."
-        )
+        st.error("특정 번호대가 통째로 전멸하는 현상이 자주 발생합니다. 자연스러운 '전멸 구간'을 인위적으로 만듭니다.")
 
         st.markdown("#### 📊 통계 정밀 거르기 (Statistical Filter)")
-        st.warning(
-            "**가장 강력한 수학적 접근**\n"
-            "6개 번호의 합이 100 미만이거나 175를 초과하는 경우는 전체의 10% 미만입니다. "
-            "홀수나 짝수만 6개가 몰려서 나오는 경우도 2% 미만입니다. "
-            "이 필터는 나올 확률이 극히 희박한 '불량 조합'을 원천 차단합니다."
-        )
+        st.warning("6개 번호의 합이 100 미만이거나 175를 초과하는 경우는 10% 미만입니다. 나올 확률이 극히 희박한 '불량 조합'을 원천 차단합니다.")
 
         st.markdown("#### 🔗 이어지는 번호 (Consecutive Rule)")
-        st.info(
-            "**심리적 허점 공략**\n"
-            "사람들은 연속 번호를 피하는 경향이 있지만, "
-            "실제로는 50% 이상의 회차에서 연속 번호가 등장합니다. "
-            "이 패턴을 일부러 포함시켜 당첨 효율을 극대화합니다."
-        )
+        st.info("실제로는 50% 이상의 회차에서 연속 번호가 등장합니다. 이 패턴을 일부러 포함시켜 당첨 효율을 극대화합니다.")
+
+        st.markdown("#### 🔢 소수 필터 (Prime Number Filter)")
+        st.success("로또 번호 중 소수는 14개입니다. 6개의 번호 중 소수가 1~3개만 포함되도록 조절하여 최적의 통계 균형을 맞춥니다.")
 
         st.markdown("---")
         st.error(
