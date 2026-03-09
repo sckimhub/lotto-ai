@@ -195,36 +195,44 @@ def generate_ai_games(full_data: list, weight_percent: int, options: dict) -> li
         final_weights = [1.0] * 45
 
     final_games = []
-    attempts = 0
-    max_attempts = 10_000
+    relaxed_any = False  # 조건 완화 여부 추적
 
     while len(final_games) < 5:
-        attempts += 1
+        # 게임 하나를 뽑을 때마다 옵션을 원본에서 복사 → 각 게임 독립적으로 심사
+        active_options = options.copy()
+        attempts = 0
 
-        # 무한 루프 방지: 조건이 너무 까다로우면 필터 완화 후 추가
-        if attempts > max_attempts:
-            game = sorted(random.sample(range(1, 46), 6))
-            final_games.append(game)
-            st.warning("일부 번호는 조건 충족이 어려워 필터 없이 생성되었습니다.")
-            continue
+        while True:
+            attempts += 1
 
-        candidate = sorted(random.choices(range(1, 46), weights=final_weights, k=6))
-        if len(set(candidate)) < 6:  # 중복 제거
-            continue
+            # 단계별 조건 완화 (덜 중요한 순서대로 해제)
+            if attempts == 2_000: active_options["use_dead_zone"]   = False; relaxed_any = True
+            if attempts == 4_000: active_options["use_consecutive"] = False; relaxed_any = True
+            if attempts == 6_000: active_options["use_stats"]       = False; relaxed_any = True
+            if attempts == 8_000: active_options["use_end_digit"]   = False; relaxed_any = True
 
-        if options["use_end_digit"] and not ai.has_end_digit_pair(candidate):
-            continue
-        if options["use_dead_zone"] and not ai.has_dead_zone(candidate):
-            continue
-        if options["use_stats"] and not ai.passes_stat_filter(candidate):
-            continue
-        if options["use_consecutive"]:
-            # 초반 3세트는 70% 확률로 연속 번호 포함 강제
-            if len(final_games) < 3 and not ai.has_consecutive(candidate):
-                if random.random() < 0.7:
-                    continue
+            # 최후의 보루: 모든 필터 해제 후에도 실패하면 무작위 추가
+            if attempts > 10_000:
+                final_games.append(sorted(random.sample(range(1, 46), 6)))
+                relaxed_any = True
+                break
 
-        final_games.append(candidate)
+            candidate = sorted(random.choices(range(1, 46), weights=final_weights, k=6))
+            if len(set(candidate)) < 6:
+                continue
+
+            if active_options["use_end_digit"] and not ai.has_end_digit_pair(candidate): continue
+            if active_options["use_dead_zone"] and not ai.has_dead_zone(candidate):       continue
+            if active_options["use_stats"]     and not ai.passes_stat_filter(candidate):  continue
+            if active_options["use_consecutive"]:
+                if len(final_games) < 3 and not ai.has_consecutive(candidate):
+                    if random.random() < 0.7: continue
+
+            final_games.append(candidate)
+            break  # 이 게임 통과 → 다음 게임으로
+
+    if relaxed_any:
+        st.info("💡 일부 필터 조합이 까다로워 AI가 조건을 단계적으로 완화하여 번호를 생성했습니다.")
 
     return final_games
 
@@ -261,19 +269,26 @@ def fetch_lotto_data(count: int):
     return full_data_flat, history_info
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_prize_cached(epsd: int) -> dict:
+    """당첨금이 정상 등록된 경우에만 캐시. 미등록 시 예외 발생."""
+    url = f"https://www.dhlottery.co.kr/common.do?method=getLottoNumber&drwNo={epsd}"
+    res = requests.get(url, timeout=5)
+    res.raise_for_status()
+    data = res.json()
+    if data.get("returnValue") == "success" and data.get("firstWinamnt", 0) > 0:
+        return data
+    raise ValueError("당첨금 정보가 아직 업데이트되지 않았습니다.")
+
+
 def fetch_prize_info(epsd: int) -> dict:
-    """특정 회차의 등수별 당첨 금액을 반환합니다."""
+    """특정 회차의 등수별 당첨 금액을 반환합니다. 데이터 미비 시 기본값 반환."""
     default_prizes = {1: None, 2: 50_000_000, 3: 1_500_000, 4: 50_000, 5: 5_000}
     try:
-        url = f"https://www.dhlottery.co.kr/common.do?method=getLottoNumber&drwNo={epsd}"
-        res = requests.get(url, timeout=5)
-        res.raise_for_status()
-        data = res.json()
-        if data.get("returnValue") == "success":
-            default_prizes[1] = data.get("firstWinamnt")
-    except Exception as e:
-        st.warning(f"{epsd}회차 당첨금 조회 실패: {e}")
+        data = _fetch_prize_cached(epsd)
+        default_prizes[1] = data.get("firstWinamnt")
+    except Exception:
+        pass  # 아직 업데이트 안 된 경우 조용히 기본값 반환 (캐시 안 됨)
     return default_prizes
 
 
@@ -351,6 +366,11 @@ html, body, [class*="css"] { font-family: "Malgun Gothic", sans-serif; }
 [data-testid="stToolbar"] { visibility: hidden !important; display: none !important; }
 header  { visibility: hidden !important; }
 footer  { visibility: hidden !important; }
+/* PC에서 모바일 전용 설정 패널 숨기기 */
+.mobile-only-settings { display: none; }
+@media (max-width: 768px) {
+    .mobile-only-settings { display: block; }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -415,6 +435,7 @@ if full_data and history_info:
     # 모바일용 설정 패널 (탭 내부 상단에 expander로 표시)
     # ==========================================
     with tab_home:
+        st.markdown('<div class="mobile-only-settings">', unsafe_allow_html=True)
         with st.expander("⚙️ 분석 설정 (모바일 전용)", expanded=False):
             col_a, col_b = st.columns(2)
             with col_a:
@@ -442,6 +463,7 @@ if full_data and history_info:
                 )
                 st.markdown(mb_hot_html, unsafe_allow_html=True)
 
+        st.markdown('</div>', unsafe_allow_html=True)
         # 실제 사용할 값: 모바일 expander 값 우선
         count_val  = mb_count_val
         weight_val = mb_weight_val
