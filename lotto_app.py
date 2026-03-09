@@ -95,18 +95,37 @@ def load_history():
     return records
 
 
-def save_history(epsd: int, games: list) -> bool:
-    """저장 성공 시 True 반환. 구글 시트 실패 시 로컬 파일로 폴백."""
-    try:
-        gc = get_gsheet_client()
-        if gc:
-            sheet_url = st.secrets["sheet"]["url"]
-            gc.open_by_url(sheet_url).sheet1.append_row([epsd, json.dumps(games)])
-            return True
-    except Exception as e:
-        st.warning(f"구글 시트 저장 실패, 로컬 파일에 저장합니다. ({e})")
+def save_history(epsd: int, games: list, retries: int = 3, retry_delay: float = 1.5) -> bool:
+    """
+    구글 시트에 저장 시도 (최대 retries 회 재시도).
+    저장 후 실제로 데이터가 들어갔는지 검증까지 수행.
+    모두 실패 시 로컬 파일로 폴백. 성공 시 True 반환.
+    """
+    gc = get_gsheet_client()
+    if gc:
+        sheet_url = st.secrets["sheet"]["url"]
+        row_data = [epsd, json.dumps(games)]
 
-    # 폴백: 로컬 파일 (구글 시트 저장 실패한 경우에만)
+        for attempt in range(1, retries + 1):
+            try:
+                worksheet = gc.open_by_url(sheet_url).sheet1
+                worksheet.append_row(row_data)
+
+                # 저장 검증: 마지막 행이 실제로 기록됐는지 확인
+                last_row = worksheet.get_all_values()[-1]
+                if len(last_row) >= 2 and str(last_row[0]) == str(epsd):
+                    return True  # 저장 + 검증 성공
+
+                # 데이터는 들어갔으나 검증 불일치 → 재시도
+                raise ValueError(f"검증 실패: 저장된 회차({last_row[0]}) ≠ 요청 회차({epsd})")
+
+            except Exception as e:
+                if attempt < retries:
+                    time.sleep(retry_delay)
+                else:
+                    st.warning(f"구글 시트 저장 {retries}회 모두 실패, 로컬 파일에 저장합니다. (마지막 오류: {e})")
+
+    # 폴백: 로컬 파일 (구글 시트 연결 없거나 모두 실패한 경우에만)
     with open("lotto_history.jsonl", "a", encoding="utf-8") as f:
         f.write(json.dumps({"epsd": epsd, "games": games}) + "\n")
     return False
@@ -343,6 +362,8 @@ if "is_generating" not in st.session_state:
     st.session_state.is_generating = False
 if "recent_generated_games" not in st.session_state:
     st.session_state.recent_generated_games = []
+if "last_save_to_sheet" not in st.session_state:
+    st.session_state.last_save_to_sheet = None
 
 
 # ==========================================
@@ -412,19 +433,25 @@ if full_data and history_info:
                 "use_stats":       use_stats,
                 "use_consecutive": use_consec,
             }
-            with st.spinner("번호 분석 및 저장 중입니다..."):
+            with st.spinner("번호 분석 중..."):
                 games = generate_ai_games(full_data, weight_val, options)
-                save_history(target_epsd, games)
-                time.sleep(1.5)
-                st.session_state.recent_generated_games = games
-                st.session_state.is_generating = False
-                st.rerun()
+
+            with st.spinner("구글 시트에 저장 중... (최대 3회 재시도)"):
+                saved_to_sheet = save_history(target_epsd, games)
+
+            st.session_state.recent_generated_games = games
+            st.session_state.last_save_to_sheet = saved_to_sheet
+            st.session_state.is_generating = False
+            st.rerun()
 
         if st.session_state.recent_generated_games and not st.session_state.is_generating:
             st.markdown(f"### 🤖 새로 뽑힌 추천 번호 ({target_epsd}회차용)")
             for i, game in enumerate(st.session_state.recent_generated_games):
                 draw_row(f"세트 {i + 1}", game)
-            st.success("생성 및 DB 저장 완료! 최신 데이터가 '통계 탭'에 반영되었습니다. 🍀")
+            if st.session_state.get("last_save_to_sheet"):
+                st.success("생성 및 구글 시트 저장 완료! 최신 데이터가 '통계 탭'에 반영되었습니다. 🍀")
+            else:
+                st.warning("번호 생성 완료. 구글 시트 저장에 실패하여 로컬 파일에 저장했습니다. 📁")
             st.markdown("<br>", unsafe_allow_html=True)
 
         with st.expander(f"📋 최근 {count_val}회 당첨 결과 확인하기", expanded=True):
