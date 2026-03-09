@@ -367,32 +367,31 @@ if "last_save_to_sheet" not in st.session_state:
 
 
 # ==========================================
-# [7] 사이드바
+# [7] 사이드바 (PC) — 데스크탑에서는 사이드바에 표시
 # ==========================================
 with st.sidebar:
     st.header("⚙️ 분석 설정")
-    count_val = st.number_input("과거 분석 정보(회)", min_value=5, max_value=100, value=10, step=1)
+    sb_count_val  = st.number_input("과거 분석 정보(회)", min_value=5, max_value=100, value=10, step=1, key="sb_count")
     st.write("흐름 가중치(%) — 높을수록 최근 번호 우선")
-    weight_val = st.number_input("가중치 입력", min_value=0, value=100, step=10)
+    sb_weight_val = st.number_input("가중치 입력", min_value=0, value=100, step=10, key="sb_weight")
 
     st.markdown("---")
     st.subheader("거르기 조건")
-    use_trend  = st.checkbox("🔥 흐름 가중치",      value=True)
-    use_end    = st.checkbox("⚡ 끝자리 일치",      value=True)
-    use_dead   = st.checkbox("☠️ 제외 구간",        value=True)
-    use_stats  = st.checkbox("📊 통계 정밀 거르기", value=True)
-    use_consec = st.checkbox("🔗 이어지는 번호",    value=True)
+    sb_use_trend  = st.checkbox("🔥 흐름 가중치",      value=True, key="sb_trend")
+    sb_use_end    = st.checkbox("⚡ 끝자리 일치",      value=True, key="sb_end")
+    sb_use_dead   = st.checkbox("☠️ 제외 구간",        value=True, key="sb_dead")
+    sb_use_stats  = st.checkbox("📊 통계 정밀 거르기", value=True, key="sb_stats")
+    sb_use_consec = st.checkbox("🔗 이어지는 번호",    value=True, key="sb_consec")
 
     st.markdown("---")
     st.subheader("🔥 최근 핫넘버 TOP 5")
-    st.caption(f"(최근 {count_val}회 기준)")
     hot_numbers_slot = st.empty()
 
 
 # ==========================================
 # [8] 데이터 로드
 # ==========================================
-full_data, history_info = fetch_lotto_data(count_val)
+full_data, history_info = fetch_lotto_data(sb_count_val)
 
 if full_data and history_info:
     # 사이드바 핫넘버 표시
@@ -413,9 +412,45 @@ if full_data and history_info:
     tab_home, tab_stats, tab_help = st.tabs(["🎯 분석기 홈", "📊 이번 주 수익률/통계", "📖 설명서"])
 
     # ==========================================
-    # 탭 1: 분석기 홈
+    # 모바일용 설정 패널 (탭 내부 상단에 expander로 표시)
     # ==========================================
     with tab_home:
+        with st.expander("⚙️ 분석 설정 (모바일 전용)", expanded=False):
+            col_a, col_b = st.columns(2)
+            with col_a:
+                mb_count_val  = st.number_input("분석 회수(회)", min_value=5, max_value=100,
+                                                value=sb_count_val, step=1, key="mb_count")
+                mb_weight_val = st.number_input("흐름 가중치(%)", min_value=0,
+                                                value=sb_weight_val, step=10, key="mb_weight")
+            with col_b:
+                mb_use_trend  = st.checkbox("🔥 흐름 가중치",      value=sb_use_trend,  key="mb_trend")
+                mb_use_end    = st.checkbox("⚡ 끝자리 일치",      value=sb_use_end,    key="mb_end")
+                mb_use_dead   = st.checkbox("☠️ 제외 구간",        value=sb_use_dead,   key="mb_dead")
+                mb_use_stats  = st.checkbox("📊 통계 거르기",      value=sb_use_stats,  key="mb_stats")
+                mb_use_consec = st.checkbox("🔗 이어지는 번호",    value=sb_use_consec, key="mb_consec")
+
+            # 모바일 핫넘버
+            st.markdown(f"**🔥 최근 핫넘버 TOP 5** (최근 {mb_count_val}회 기준)")
+            mb_recent = fetch_lotto_data(mb_count_val)
+            if mb_recent[1]:
+                mb_nums = [n for _, nums, _ in mb_recent[1] for n in nums]
+                mb_top5 = Counter(mb_nums).most_common(5)
+                mb_hot_html = "".join(
+                    f"<div style='display:inline-block;margin-right:8px;'>{get_ball_html(num)}"
+                    f"<span style='font-size:12px;color:#555;'> {freq}회</span></div>"
+                    for num, freq in mb_top5
+                )
+                st.markdown(mb_hot_html, unsafe_allow_html=True)
+
+        # 실제 사용할 값: 모바일 expander 값 우선
+        count_val  = mb_count_val
+        weight_val = mb_weight_val
+        use_trend  = mb_use_trend
+        use_end    = mb_use_end
+        use_dead   = mb_use_dead
+        use_stats  = mb_use_stats
+        use_consec = mb_use_consec
+
         st.button(
             f"🚀 {target_epsd}회차 번호 뽑기 시작",
             type="primary",
@@ -454,7 +489,7 @@ if full_data and history_info:
                 st.warning("번호 생성 완료. 구글 시트 저장에 실패하여 로컬 파일에 저장했습니다. 📁")
             st.markdown("<br>", unsafe_allow_html=True)
 
-        with st.expander(f"📋 최근 {count_val}회 당첨 결과 확인하기", expanded=True):
+        with st.expander(f"📋 최근 {mb_count_val}회 당첨 결과 확인하기", expanded=True):
             for epsd, nums, _ in reversed(history_info):
                 draw_row(f"{epsd}회", nums, is_header=True)
 
