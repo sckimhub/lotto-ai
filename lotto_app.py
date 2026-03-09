@@ -119,7 +119,7 @@ def save_history(epsd: int, games: list, retries: int = 3, retry_delay: float = 
 
 
 # ==========================================
-# [2] AI 분석 엔진 (소수 필터 추가)
+# [2] AI 분석 엔진 (소수 필터 추가 & 에러 수정)
 # ==========================================
 class LottoAI:
 
@@ -148,7 +148,9 @@ class LottoAI:
         odd_count = sum(1 for n in numbers if n % 2 != 0)
         if odd_count in (0, 6):
             return False
-        low_count = sum(1 for n in numbers if n <= 22):
+        # [수정된 부분] 문법 에러 해결
+        low_count = sum(1 for n in numbers if n <= 22)
+        if low_count in (0, 6):
             return False
         return True
 
@@ -387,7 +389,7 @@ with st.sidebar:
     sb_use_dead   = st.checkbox("☠️ 제외 구간",        value=True, key="sb_dead")
     sb_use_stats  = st.checkbox("📊 통계 정밀 거르기", value=True, key="sb_stats")
     sb_use_consec = st.checkbox("🔗 이어지는 번호",    value=True, key="sb_consec")
-    sb_use_prime  = st.checkbox("🔢 소수 필터 (1~3개)", value=True, key="sb_prime") # 신규 추가
+    sb_use_prime  = st.checkbox("🔢 소수 필터 (1~3개)", value=True, key="sb_prime")
 
     st.markdown("---")
     st.subheader("🔥 최근 핫넘버 TOP 5")
@@ -434,7 +436,7 @@ if full_data and history_info:
                 mb_use_dead   = st.checkbox("☠️ 제외 구간",        value=sb_use_dead,   key="mb_dead")
                 mb_use_stats  = st.checkbox("📊 통계 거르기",      value=sb_use_stats,  key="mb_stats")
                 mb_use_consec = st.checkbox("🔗 이어지는 번호",    value=sb_use_consec, key="mb_consec")
-                mb_use_prime  = st.checkbox("🔢 소수 필터",        value=sb_use_prime,  key="mb_prime") # 신규 추가
+                mb_use_prime  = st.checkbox("🔢 소수 필터",        value=sb_use_prime,  key="mb_prime")
 
             st.markdown(f"**🔥 최근 핫넘버 TOP 5** (최근 {mb_count_val}회 기준)")
             mb_recent = fetch_lotto_data(mb_count_val)
@@ -476,7 +478,7 @@ if full_data and history_info:
                 "use_dead_zone":   use_dead,
                 "use_stats":       use_stats,
                 "use_consecutive": use_consec,
-                "use_prime":       use_prime, # 신규 추가
+                "use_prime":       use_prime,
             }
             with st.spinner("번호 분석 중..."):
                 games = generate_ai_games(full_data, weight_val, options)
