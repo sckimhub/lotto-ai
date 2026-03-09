@@ -4,6 +4,7 @@ import random
 import os
 import json
 import time
+import pandas as pd
 from collections import Counter
 import streamlit.components.v1 as components
 import base64
@@ -117,10 +118,9 @@ def save_history(epsd: int, games: list, retries: int = 3, retry_delay: float = 
 
 
 # ==========================================
-# [2] AI 분석 엔진
+# [2] AI 분석 엔진 (모든 필터 통합)
 # ==========================================
 PRIMES = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43}
-
 
 class LottoAI:
     def analyze_recent_trend(self, data: list, scope: int = 15) -> dict:
@@ -131,19 +131,19 @@ class LottoAI:
             weights[num] += freq * 0.5
         return weights
 
+    # 신규: 미출수 추출
     def get_cold_numbers(self, data: list, scope: int = 15) -> set:
-        """최근 15주 동안 한 번도 나오지 않은 미출수 반환"""
         recent = data[:scope * 6]
         appeared = set(recent)
         return set(range(1, 46)) - appeared
 
+    # 신규: 미출수 포함 여부 확인
     def has_cold_number(self, numbers: list, cold_set: set) -> bool:
-        """미출수가 1개 이상 포함되어 있는지 확인"""
         if not cold_set: return True
         return any(n in cold_set for n in numbers)
 
+    # 신규: OMR 용지 쏠림 방지
     def passes_omr_filter(self, numbers: list) -> bool:
-        """OMR 용지에서 가로줄이나 세로줄에 4개 이상 몰리는 현상 방지"""
         rows = [(n - 1) // 7 for n in numbers]
         cols = [(n - 1) % 7 for n in numbers]
         if any(c >= 4 for c in Counter(rows).values()): return False
@@ -195,8 +195,8 @@ class LottoAI:
         if sum(1 for n in numbers if n % 5 == 0) >= 3: return False
         return True
 
+    # 신규: 스펙 요약 리포트 텍스트 생성
     def get_specs(self, numbers: list) -> str:
-        """생성된 번호의 스펙을 요약 문자열로 반환"""
         total = sum(numbers)
         odd = sum(1 for n in numbers if n % 2 != 0)
         even = 6 - odd
@@ -244,8 +244,8 @@ def generate_ai_games(full_data: list, weight_percent: int, options: dict, fixed
         while True:
             attempts += 1
 
-            # 단계별 조건 완화
-            if attempts == 2_000: active_options["use_omr"]           = False; relaxed_any = True
+            # 단계별 조건 완화 (덜 중요한 순서대로 해제)
+            if attempts == 2_000: active_options["use_omr"]             = False; relaxed_any = True
             if attempts == 3_000: active_options["use_dead_zone"]       = False; relaxed_any = True
             if attempts == 4_000: active_options["use_section_balance"] = False; relaxed_any = True
             if attempts == 5_000: active_options["use_multiple"]        = False; relaxed_any = True
@@ -253,8 +253,8 @@ def generate_ai_games(full_data: list, weight_percent: int, options: dict, fixed
             if attempts == 7_000: active_options["use_cold"]            = False; relaxed_any = True
             if attempts == 8_000: active_options["use_prime"]           = False; relaxed_any = True
             if attempts == 9_000: active_options["use_ac"]              = False; relaxed_any = True
-            if attempts == 10_000: active_options["use_stats"]           = False; relaxed_any = True
-            if attempts == 11_000: active_options["use_end_digit"]       = False; relaxed_any = True
+            if attempts == 10_000: active_options["use_stats"]          = False; relaxed_any = True
+            if attempts == 11_000: active_options["use_end_digit"]      = False; relaxed_any = True
 
             if attempts > 12_000:
                 picks = random.sample(pool, min(needed, len(pool)))
@@ -499,6 +499,17 @@ if full_data and history_info:
             mb_fixed    = st.multiselect("고정 번호", list(range(1, 46)), key="mb_fixed")
             mb_excluded = st.multiselect("제외 번호", list(range(1, 46)), key="mb_excluded")
 
+            st.markdown(f"**🔥 최근 핫넘버 TOP 5** (최근 {mb_count_val}회 기준)")
+            mb_recent = history_info
+            if mb_recent:
+                mb_nums = [n for _, nums, _ in mb_recent for n in nums]
+                mb_top5 = Counter(mb_nums).most_common(5)
+                st.markdown("".join(
+                    f"<div style='display:inline-block;margin-right:8px;'>{get_ball_html(num)}"
+                    f"<span style='font-size:12px;color:#555;'> {freq}회</span></div>"
+                    for num, freq in mb_top5
+                ), unsafe_allow_html=True)
+
         st.markdown('</div>', unsafe_allow_html=True)
 
         options = {
@@ -554,7 +565,6 @@ if full_data and history_info:
             if st.session_state.recent_generated_games and not st.session_state.is_generating:
                 st.markdown(f"### ✨ 새로 뽑힌 추천 번호 ({target_epsd}회차용)")
                 for i, game in enumerate(st.session_state.recent_generated_games):
-                    # 스펙 요약 리포트 적용
                     specs_str = ai_engine.get_specs(game)
                     draw_row(f"세트 {i + 1}", game, specs=specs_str)
                 
@@ -563,16 +573,20 @@ if full_data and history_info:
                 else:
                     st.warning("번호 생성 완료. 구글 시트 저장 실패(로컬 파일 저장).")
 
+        with st.expander(f"📋 최근 {mb_count_val}회 당첨 결과 확인하기", expanded=True):
+            for epsd, nums, _ in reversed(history_info):
+                draw_row(f"{epsd}회", nums, is_header=True)
+
     # ==========================================
-    # 탭 2: 통계 / ROI
+    # 탭 2: 통계 / ROI (차트 포함 100% 복구 완료)
     # ==========================================
     with tab_stats:
-        # 기존 통계 렌더링 로직 (생략하지 않고 그대로 유지)
         latest_nums  = set(history_info[0][1])
         latest_bonus = history_info[0][2]
         total_games_last_week = 0
         this_week_usage_count = 0
         prize_counts  = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, "fail": 0}
+        winning_games = []
         
         all_time_prize_counts = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, "fail": 0}
         all_time_total = 0
@@ -580,19 +594,22 @@ if full_data and history_info:
         for record in history_records:
             rec_epsd  = record.get("epsd")
             rec_games = record.get("games", [])
+            
             if rec_epsd == target_epsd:
                 this_week_usage_count += len(rec_games)
+                
             if rec_epsd == latest_epsd:
                 for game in rec_games:
                     total_games_last_week += 1
                     match     = len(set(game) & latest_nums)
                     has_bonus = latest_bonus in game
-                    if   match == 6:               prize_counts[1] += 1
-                    elif match == 5 and has_bonus: prize_counts[2] += 1
-                    elif match == 5:               prize_counts[3] += 1
+                    if   match == 6:               prize_counts[1] += 1; winning_games.append(("🎉 1등 당첨!", game))
+                    elif match == 5 and has_bonus: prize_counts[2] += 1; winning_games.append(("✨ 2등 당첨!", game))
+                    elif match == 5:               prize_counts[3] += 1; winning_games.append(("👍 3등 당첨", game))
                     elif match == 4:               prize_counts[4] += 1
                     elif match == 3:               prize_counts[5] += 1
                     else:                          prize_counts["fail"] += 1
+                    
             if rec_epsd in epsd_result_map:
                 w_nums, w_bonus = epsd_result_map[rec_epsd]
                 for game in rec_games:
@@ -616,7 +633,59 @@ if full_data and history_info:
 </div>
 """, unsafe_allow_html=True)
 
-        st.subheader("전체 이력 기반 필터 효과 분석")
+        st.subheader(f"📈 {latest_epsd}회차 투자 대비 수익률 (ROI)")
+        if total_games_last_week == 0:
+            st.info(f"아직 데이터베이스에 {latest_epsd}회차 생성 기록이 없습니다.")
+        else:
+            prizes       = fetch_prize_info(latest_epsd)
+            total_spent = total_games_last_week * 1_000
+            first_prize = prizes[1] if prizes[1] is not None else 0
+            total_won   = (
+                prize_counts[1] * first_prize +
+                prize_counts[2] * prizes[2] +
+                prize_counts[3] * prizes[3] +
+                prize_counts[4] * prizes[4] +
+                prize_counts[5] * prizes[5]
+            )
+            roi = (total_won / total_spent * 100) if total_spent > 0 else 0
+            first_prize_label = f"약 {first_prize // 100_000_000}억" if first_prize else "확인불가"
+
+            st.markdown(f"""
+<div style="display:flex;flex-direction:row;justify-content:space-around;
+            background-color:#f1f3f5;padding:20px;border-radius:10px;margin-bottom:20px;">
+  <div style="text-align:center;">
+    <div style="font-size:14px;color:#555;">총 투자 금액</div>
+    <div style="font-size:22px;font-weight:bold;color:#333;">{total_spent:,} 원</div>
+  </div>
+  <div style="text-align:center;">
+    <div style="font-size:14px;color:#555;">총 당첨 금액</div>
+    <div style="font-size:22px;font-weight:bold;color:#E74C3C;">{total_won:,} 원</div>
+  </div>
+  <div style="text-align:center;">
+    <div style="font-size:14px;color:#555;">프로그램 수익률 (ROI)</div>
+    <div style="font-size:22px;font-weight:bold;color:#2980B9;">{roi:,.1f} %</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+            st.markdown(f"**총 {total_games_last_week:,}게임 중 당첨 내역**")
+            c1, c2, c3 = st.columns(3)
+            with c1: st.markdown(stat_box(f"{prize_counts[1]:,} 회", f"1등 ({first_prize_label})", "#C0392B"), unsafe_allow_html=True)
+            with c2: st.markdown(stat_box(f"{prize_counts[2]:,} 회", "2등 (약 5천만)",            "#8E44AD"), unsafe_allow_html=True)
+            with c3: st.markdown(stat_box(f"{prize_counts[3]:,} 회", "3등 (약 150만)",             "#2980B9"), unsafe_allow_html=True)
+            c4, c5, c6 = st.columns(3)
+            with c4: st.markdown(stat_box(f"{prize_counts[4]:,} 회", "4등 (5만 원)",  "#F39C12"), unsafe_allow_html=True)
+            with c5: st.markdown(stat_box(f"{prize_counts[5]:,} 회", "5등 (5천 원)",  "#27AE60"), unsafe_allow_html=True)
+            with c6: st.markdown(stat_box(f"{prize_counts['fail']:,} 회", "낙첨",     "#7F8C8D"), unsafe_allow_html=True)
+
+            if winning_games:
+                st.markdown("---")
+                st.markdown("#### ✨ 축하합니다! 상위권 당첨 번호")
+                for label, game in winning_games:
+                    draw_row(label, game)
+
+        st.markdown("---")
+        st.subheader("📊 전체 이력 기반 필터 효과 분석")
         if all_time_total == 0:
             st.info("분석할 이력 데이터가 없습니다. 번호를 생성하면 누적 통계가 쌓입니다.")
         else:
@@ -625,20 +694,37 @@ if full_data and history_info:
 <div style="background:#f8f9fa;border-radius:10px;padding:15px;margin-bottom:15px;border:1px solid #dee2e6;">
   <div style="font-size:14px;color:#555;margin-bottom:4px;">누적 분석 게임 수</div>
   <div style="font-size:28px;font-weight:bold;color:#2c3e50;">{all_time_total:,} 게임</div>
-  <div style="font-size:14px;color:#27AE60;margin-top:4px;">전체 적중률 (3등 이상): <b>{hit_rate:.2f}%</b></div>
+  <div style="font-size:14px;color:#27AE60;margin-top:4px;">전체 적중률 (5등 이상): <b>{hit_rate:.2f}%</b></div>
 </div>
 """, unsafe_allow_html=True)
             ca, cb, cc = st.columns(3)
             with ca: st.markdown(stat_box(f"{all_time_prize_counts[1]:,}", "누적 1등", "#C0392B"), unsafe_allow_html=True)
             with cb: st.markdown(stat_box(f"{all_time_prize_counts[2]:,}", "누적 2등", "#8E44AD"), unsafe_allow_html=True)
             with cc: st.markdown(stat_box(f"{all_time_prize_counts[3]:,}", "누적 3등", "#2980B9"), unsafe_allow_html=True)
+            cd, ce, cf = st.columns(3)
+            with cd: st.markdown(stat_box(f"{all_time_prize_counts[4]:,}", "누적 4등", "#F39C12"), unsafe_allow_html=True)
+            with ce: st.markdown(stat_box(f"{all_time_prize_counts[5]:,}", "누적 5등", "#27AE60"), unsafe_allow_html=True)
+            with cf: st.markdown(stat_box(f"{all_time_prize_counts['fail']:,}", "누적 낙첨", "#7F8C8D"), unsafe_allow_html=True)
+
+        # 판다스 바 차트 100% 복구 완료!
+        st.markdown("---")
+        st.subheader(f"📊 최근 {count_val}회 번호별 출현 빈도 차트")
+        recent_all_nums = [n for _, nums, _ in history_info for n in nums]
+        freq_dict = Counter(recent_all_nums)
+        
+        chart_data = {"번호": [], "출현 횟수": []}
+        for i in range(1, 46):
+            chart_data["번호"].append(f"{i}번")
+            chart_data["출현 횟수"].append(freq_dict.get(i, 0))
+            
+        df_chart = pd.DataFrame(chart_data).set_index("번호")
+        st.bar_chart(df_chart, color="#2980B9")
 
     # ==========================================
-    # 탭 3: 번호 생성 이력 (당첨 모아보기 추가)
+    # 탭 3: 번호 생성 이력 (당첨 모아보기 & 하이라이트)
     # ==========================================
     with tab_history:
         st.subheader("번호 생성 전체 이력")
-        # 사용자 피드백: 당첨 내역만 필터링하는 토글
         show_only_wins = st.checkbox("🏆 3등 이상 상위 당첨 이력만 모아보기 (1, 2, 3등)", value=False)
 
         if not history_records:
@@ -654,16 +740,14 @@ if full_data and history_info:
                 games_list = epsd_groups[epsd]
                 won_set, won_bonus = epsd_result_map.get(epsd, (None, None))
                 
-                # 상위 당첨 포함 여부 검사
                 has_upper_win = False
                 for game in games_list:
                     if won_set:
                         match = len(set(game) & won_set)
-                        if match >= 5: # 1, 2, 3등
+                        if match >= 5:
                             has_upper_win = True
                             break
 
-                # 필터가 켜져있고, 상위 당첨이 없으면 이번 회차는 건너뜀
                 if show_only_wins and not has_upper_win:
                     continue
 
@@ -687,37 +771,48 @@ if full_data and history_info:
                             if   match == 6:               prize_label = "🎉 1등 당첨!"; is_highlight = True
                             elif match == 5 and has_bonus: prize_label = "✨ 2등 당첨!"; is_highlight = True
                             elif match == 5:               prize_label = "👍 3등 당첨";  is_highlight = True
-                            elif match == 4:               prize_label = "4등"
-                            elif match == 3:               prize_label = "5등"
+                            elif match == 4:               prize_label = "4등 당첨"
+                            elif match == 3:               prize_label = "5등 당첨"
                             else:                          prize_label = "낙첨"
                             
-                            # 당첨된 세트는 하이라이트 처리
                             draw_row(f"#{i+1} {prize_label}", game, specs=specs_str, highlight=is_highlight)
                         else:
                             draw_row(f"#{i+1}", game, specs=specs_str)
 
     # ==========================================
-    # 탭 4: 설명서
+    # 탭 4: 설명서 (클로드 + 제 설명 모두 포함)
     # ==========================================
     with tab_help:
         st.subheader("인공지능 분석 원리")
         st.write("이 프로그램은 역대 당첨 번호의 통계적 사실을 바탕으로 당첨 확률이 극히 희박한 조합을 걸러내어 효율적인 번호를 추천합니다.")
         st.markdown("---")
         filters = [
-            ("🔥 흐름 가중치", "최근 15주 자주 나온 'Hot Number'가 당분간 계속 나오는 경향성을 반영합니다."),
-            ("❄️ 미출수 부활", "최근 15주간 단 한 번도 나오지 않은 '장기 미출수'를 강제로 1개 이상 포함시켜 회귀의 법칙을 적용합니다."),
-            ("📝 OMR 편중 차단", "실제 로또 OMR 용지에서 같은 가로줄이나 세로줄에 번호가 4개 이상 나란히 서는 비정상적인 패턴을 차단합니다."),
-            ("⚡ 끝자리 일치", "당첨 번호의 약 85%는 끝자리가 같은 숫자가 최소 1쌍 이상 포함됩니다."),
-            ("☠️ 제외 구간", "특정 번호대가 통째로 전멸하는 자연스러운 현상을 인위적으로 만듭니다."),
-            ("📊 통계 정밀 거르기", "합계(100~175)와 홀짝/고저 비율이 극단적으로 쏠리는 조합을 차단합니다."),
-            ("🔗 이어지는 번호", "50% 이상의 회차에서 등장하는 연속 번호 패턴을 일부러 포함시킵니다."),
-            ("🔢 소수 필터", "소수(2,3,5,7...)가 1~3개만 포함되도록 조절하여 최적의 통계 균형을 맞춥니다."),
-            ("📐 AC값 필터", "6개 번호 간 차이값의 종류 수(AC값)가 7 이상인 규칙적이지 않은 조합만 통과시킵니다."),
-            ("⚖️ 구간 합 균형", "전반부(1~22) 합과 후반부(23~45) 합의 차이가 50 미만이 되도록 균형을 잡습니다."),
-            ("✖️ 배수 편중 차단", "3의 배수나 5의 배수가 너무 많이 몰리는 조합을 차단합니다."),
+            ("🔥 흐름 가중치 (Trend Weight)", "최근 15주 자주 나온 'Hot Number'가 당분간 계속 나오는 경향성을 반영하여 해당 번호의 뽑힐 확률을 높입니다."),
+            ("❄️ 미출수 부활 (Cold Number)", "최근 15주간 단 한 번도 나오지 않은 '장기 미출수'를 강제로 1개 이상 포함시켜 회귀의 법칙을 적용합니다."),
+            ("📝 OMR 편중 차단 (OMR Pattern)", "실제 로또 OMR 용지에서 같은 가로줄이나 세로줄에 번호가 4개 이상 나란히 서는 비정상적인 패턴을 차단합니다."),
+            ("⚡ 끝자리 일치 (End Digit Sync)", "역대 당첨 번호의 약 85% 이상은 끝자리가 같은 숫자가 최소 1쌍 이상 포함되어 있습니다. 이 확률에 베팅합니다."),
+            ("☠️ 제외 구간 (Dead Zone)", "특정 번호대가 통째로 전멸하는 현상이 자주 발생합니다. 자연스러운 전멸 구간을 인위적으로 만듭니다."),
+            ("📊 통계 정밀 거르기 (Statistical Filter)", "6개 번호의 합이 100~175 범위를 벗어나거나 홀수/짝수가 6개 몰리는 불량 조합을 원천 차단합니다."),
+            ("🔗 이어지는 번호 (Consecutive Rule)", "실제로는 50% 이상의 회차에서 연속 번호가 등장합니다. 이 패턴을 일부러 포함시켜 당첨 효율을 높입니다."),
+            ("🔢 소수 필터 (Prime Filter)", "1~45 중 소수는 14개입니다. 소수가 0개 또는 5개 이상 포함된 조합은 전체의 10% 미만으로 걸러냅니다."),
+            ("📐 AC값 필터 (Arithmetic Complexity)", "6개 번호 간 차이값의 종류 수(AC값)가 7 미만인 조합은 번호들이 너무 규칙적으로 분포된 경우로 확률이 낮습니다."),
+            ("⚖️ 구간 합 균형 (Section Balance)", "전반부(1~22) 합과 후반부(23~45) 합의 차이가 50 이상인 극단적 편중 조합을 걸러냅니다."),
+            ("✖️ 배수 편중 차단 (Multiple Filter)", "3의 배수가 4개 이상, 또는 5의 배수가 3개 이상 몰리는 조합은 극히 드뭅니다. 이런 편중 조합을 차단합니다."),
+            ("🎯 번호 고정 / 제외", "특정 번호를 반드시 포함하거나 완전히 제외하여 나만의 조합 전략을 세울 수 있습니다. 고정 번호는 최대 5개까지 설정 가능합니다."),
         ]
         for title, desc in filters:
             st.markdown(f"#### {title}")
             st.info(desc)
+            
+        st.markdown("---")
+        st.error(
+            "### ⚠️ 꼭 읽어주세요 (면책 조항)\n"
+            "이 프로그램은 불필요한 조합을 제외하고 수학적 확률을 높이기 위해 설계되었지만, "
+            "**로또 번호 추첨은 독립 시행이며 궁극적으로 '운(Luck)'에 의해 결정됩니다.**\n\n"
+            "아무리 뛰어난 인공지능이나 통계 기법을 사용하더라도 100% 당첨을 보장하는 방법은 "
+            "이 세상에 존재하지 않습니다. 본 프로그램을 통해 생성된 번호로 발생한 결과에 대한 "
+            "책임은 전적으로 사용자 본인에게 있습니다. "
+            "**로또는 반드시 부담 없는 소액으로, 건전하고 즐거운 마음으로만 즐겨 주시기 바랍니다.**"
+        )
 else:
     st.error("서버에서 데이터를 가져오지 못했습니다. 잠시 후 다시 시도해 주세요.")
