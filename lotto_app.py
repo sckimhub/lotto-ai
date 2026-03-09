@@ -287,7 +287,7 @@ def generate_ai_games(full_data: list, weight_percent: int, options: dict, fixed
             break
 
     if relaxed_any:
-        st.info("일부 필터 조합이 까다로워 AI가 조건을 단계적으로 완화하여 번호를 생성했습니다.")
+        st.info("💡 일부 필터 조합이 까다로워 AI가 조건을 단계적으로 완화하여 번호를 생성했습니다.")
 
     return final_games
 
@@ -420,6 +420,7 @@ for key, default in {"is_generating": False, "recent_generated_games": [], "last
 # ==========================================
 with st.sidebar:
     st.header("⚙️ 분석 설정")
+    # ✅ 여기서 선언된 sb_count_val이 전체 파일의 기준값이 됩니다.
     sb_count_val  = st.number_input("과거 분석 정보(회)", min_value=5, max_value=100, value=10, step=1, key="sb_count")
     sb_weight_val = st.number_input("흐름 가중치(%)", min_value=0, value=100, step=10, key="sb_weight")
 
@@ -573,12 +574,12 @@ if full_data and history_info:
                 else:
                     st.warning("번호 생성 완료. 구글 시트 저장 실패(로컬 파일 저장).")
 
-        with st.expander(f"📋 최근 {mb_count_val}회 당첨 결과 확인하기", expanded=True):
+        with st.expander(f"📋 최근 {sb_count_val}회 당첨 결과 확인하기", expanded=True):
             for epsd, nums, _ in reversed(history_info):
                 draw_row(f"{epsd}회", nums, is_header=True)
 
     # ==========================================
-    # 탭 2: 통계 / ROI (차트 포함 100% 복구 완료)
+    # 탭 2: 통계 / ROI 
     # ==========================================
     with tab_stats:
         latest_nums  = set(history_info[0][1])
@@ -706,9 +707,9 @@ if full_data and history_info:
             with ce: st.markdown(stat_box(f"{all_time_prize_counts[5]:,}", "누적 5등", "#27AE60"), unsafe_allow_html=True)
             with cf: st.markdown(stat_box(f"{all_time_prize_counts['fail']:,}", "누적 낙첨", "#7F8C8D"), unsafe_allow_html=True)
 
-        # 판다스 바 차트 100% 복구 완료!
+        # ✅ 에러가 났던 판다스 바 차트 (sb_count_val 사용으로 안전하게 복구)
         st.markdown("---")
-        st.subheader(f"📊 최근 {count_val}회 번호별 출현 빈도 차트")
+        st.subheader(f"📊 최근 {sb_count_val}회 번호별 출현 빈도 차트")
         recent_all_nums = [n for _, nums, _ in history_info for n in nums]
         freq_dict = Counter(recent_all_nums)
         
@@ -780,29 +781,30 @@ if full_data and history_info:
                             draw_row(f"#{i+1}", game, specs=specs_str)
 
     # ==========================================
-    # 탭 4: 설명서 (클로드 + 제 설명 모두 포함)
+    # 탭 4: 설명서 (기존 내용 100% 복구 + 신규 기능 설명)
     # ==========================================
     with tab_help:
         st.subheader("인공지능 분석 원리")
         st.write("이 프로그램은 역대 당첨 번호의 통계적 사실을 바탕으로 당첨 확률이 극히 희박한 조합을 걸러내어 효율적인 번호를 추천합니다.")
         st.markdown("---")
         filters = [
-            ("🔥 흐름 가중치 (Trend Weight)", "최근 15주 자주 나온 'Hot Number'가 당분간 계속 나오는 경향성을 반영하여 해당 번호의 뽑힐 확률을 높입니다."),
-            ("❄️ 미출수 부활 (Cold Number)", "최근 15주간 단 한 번도 나오지 않은 '장기 미출수'를 강제로 1개 이상 포함시켜 회귀의 법칙을 적용합니다."),
-            ("📝 OMR 편중 차단 (OMR Pattern)", "실제 로또 OMR 용지에서 같은 가로줄이나 세로줄에 번호가 4개 이상 나란히 서는 비정상적인 패턴을 차단합니다."),
-            ("⚡ 끝자리 일치 (End Digit Sync)", "역대 당첨 번호의 약 85% 이상은 끝자리가 같은 숫자가 최소 1쌍 이상 포함되어 있습니다. 이 확률에 베팅합니다."),
-            ("☠️ 제외 구간 (Dead Zone)", "특정 번호대가 통째로 전멸하는 현상이 자주 발생합니다. 자연스러운 전멸 구간을 인위적으로 만듭니다."),
-            ("📊 통계 정밀 거르기 (Statistical Filter)", "6개 번호의 합이 100~175 범위를 벗어나거나 홀수/짝수가 6개 몰리는 불량 조합을 원천 차단합니다."),
-            ("🔗 이어지는 번호 (Consecutive Rule)", "실제로는 50% 이상의 회차에서 연속 번호가 등장합니다. 이 패턴을 일부러 포함시켜 당첨 효율을 높입니다."),
-            ("🔢 소수 필터 (Prime Filter)", "1~45 중 소수는 14개입니다. 소수가 0개 또는 5개 이상 포함된 조합은 전체의 10% 미만으로 걸러냅니다."),
-            ("📐 AC값 필터 (Arithmetic Complexity)", "6개 번호 간 차이값의 종류 수(AC값)가 7 미만인 조합은 번호들이 너무 규칙적으로 분포된 경우로 확률이 낮습니다."),
-            ("⚖️ 구간 합 균형 (Section Balance)", "전반부(1~22) 합과 후반부(23~45) 합의 차이가 50 이상인 극단적 편중 조합을 걸러냅니다."),
-            ("✖️ 배수 편중 차단 (Multiple Filter)", "3의 배수가 4개 이상, 또는 5의 배수가 3개 이상 몰리는 조합은 극히 드뭅니다. 이런 편중 조합을 차단합니다."),
-            ("🎯 번호 고정 / 제외", "특정 번호를 반드시 포함하거나 완전히 제외하여 나만의 조합 전략을 세울 수 있습니다. 고정 번호는 최대 5개까지 설정 가능합니다."),
+            ("🔥 흐름 가중치 (Trend Weight)", "info", "최근 15주 자주 나온 'Hot Number'가 당분간 계속 나오는 경향성을 반영하여 해당 번호의 뽑힐 확률을 높입니다."),
+            ("❄️ 미출수 부활 (Cold Number)", "success", "최근 15주간 단 한 번도 나오지 않은 '장기 미출수'를 강제로 1개 이상 포함시켜 회귀의 법칙을 적용합니다."),
+            ("📝 OMR 편중 차단 (OMR Pattern)", "error", "실제 로또 OMR 용지에서 같은 가로줄이나 세로줄에 번호가 4개 이상 나란히 서는 비정상적인 패턴을 차단합니다."),
+            ("⚡ 끝자리 일치 (End Digit Sync)", "success", "역대 당첨 번호의 약 **85% 이상**은 끝자리가 같은 숫자가 최소 1쌍 이상 포함되어 있습니다."),
+            ("☠️ 제외 구간 (Dead Zone)", "error", "특정 번호대가 통째로 전멸하는 현상이 자주 발생합니다. 자연스러운 전멸 구간을 인위적으로 만듭니다."),
+            ("📊 통계 정밀 거르기 (Statistical Filter)", "warning", "6개 번호의 합이 100~175 범위를 벗어나거나 홀수/짝수가 6개 몰리는 불량 조합을 원천 차단합니다."),
+            ("🔗 이어지는 번호 (Consecutive Rule)", "info", "실제로는 50% 이상의 회차에서 연속 번호가 등장합니다. 이 패턴을 일부러 포함시켜 당첨 효율을 높입니다."),
+            ("🔢 소수 필터 (Prime Filter)", "success", "1~45 중 소수는 14개입니다. 소수가 0개 또는 5개 이상 포함된 조합은 전체의 10% 미만으로 걸러냅니다."),
+            ("📐 AC값 필터 (Arithmetic Complexity)", "info", "6개 번호 간 차이값의 종류 수(AC값)가 7 미만인 조합은 번호들이 너무 규칙적으로 분포된 경우로 확률이 낮습니다."),
+            ("⚖️ 구간 합 균형 (Section Balance)", "success", "전반부(1~22) 합과 후반부(23~45) 합의 차이가 50 이상인 극단적 편중 조합을 걸러냅니다."),
+            ("✖️ 배수 편중 차단 (Multiple Filter)", "warning", "3의 배수가 4개 이상, 또는 5의 배수가 3개 이상 몰리는 조합은 극히 드뭅니다. 이런 편중 조합을 차단합니다."),
+            ("🎯 번호 고정 / 제외", "info", "특정 번호를 반드시 포함하거나 완전히 제외하여 나만의 조합 전략을 세울 수 있습니다. 고정 번호는 최대 5개까지 설정 가능합니다."),
         ]
-        for title, desc in filters:
+        
+        for title, style, desc in filters:
             st.markdown(f"#### {title}")
-            st.info(desc)
+            getattr(st, style)(desc)
             
         st.markdown("---")
         st.error(
