@@ -13,7 +13,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 # ==========================================
-# [0] PWA 설치형 앱 설정
+# [0] PWA 설치형 앱 설정 
 # ==========================================
 _PWA_MANIFEST = """
 {
